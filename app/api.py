@@ -20,6 +20,7 @@ from app.models import (
     ExportResponse,
     JobDetail,
     JobSummary,
+    InsertRange,
     ManualClipCreate,
     SubtitleCue,
 )
@@ -39,6 +40,8 @@ ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".m4v", ".avi", ".webm"}
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 MANUAL_MIN_CLIP_SECONDS = 1.0
 END_TIME_TOLERANCE_SECONDS = 1.0
+MIN_INSERT_RANGE_SECONDS = 0.1
+MAX_INSERT_RANGES = 20
 
 
 def format_bytes(value: int) -> str:
@@ -119,6 +122,55 @@ def validate_cut_ranges(
             detail="Kesitler çıkarıldıktan sonra klip süresi en az 1 saniye kalmalıdır.",
         )
     return normalized
+
+
+def validate_insert_ranges(
+    insert_ranges: list[InsertRange],
+    *,
+    clip_start: float,
+    clip_end: float,
+    source_duration: float,
+    cut_ranges: list[CutRange],
+) -> list[InsertRange]:
+    if len(insert_ranges) > MAX_INSERT_RANGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Bir klibe en fazla {MAX_INSERT_RANGES} parça eklenebilir.",
+        )
+    normalized: list[InsertRange] = []
+    for insert in insert_ranges:
+        if (
+            insert.source_end - insert.source_start < MIN_INSERT_RANGE_SECONDS
+            or insert.source_end > source_duration
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Eklenecek kaynak aralığı video süresi içinde ve en az 0.1 saniye olmalıdır.",
+            )
+        if not clip_start <= insert.insert_at <= clip_end:
+            raise HTTPException(
+                status_code=422,
+                detail="Yerleştirme noktası hedef klibin zaman aralığı içinde olmalıdır.",
+            )
+        if any(cut.start < insert.insert_at < cut.end for cut in cut_ranges):
+            raise HTTPException(
+                status_code=422,
+                detail="Yerleştirme noktası kesilecek bir aralığın içinde olamaz.",
+            )
+        normalized.append(
+            InsertRange(
+                source_start=round(insert.source_start, 3),
+                source_end=round(insert.source_end, 3),
+                insert_at=round(insert.insert_at, 3),
+            )
+        )
+    return [
+        value
+        for _, value in sorted(
+            enumerate(normalized),
+            key=lambda item: (item[1].insert_at, item[0]),
+        )
+    ]
 
 
 def create_router(database: Database, work_queue: WorkQueue, settings: Settings) -> APIRouter:
@@ -294,6 +346,7 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
             score=0,
             reasons=["Manuel aralık"],
             subtitles=subtitles,
+            selection_method="manual",
             selected=True,
         )
         database.create_clip(clip)
@@ -338,6 +391,16 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
                 )
             requested_cut_ranges = [*requested_cut_ranges, *auto_cut_ranges]
         cut_ranges = validate_cut_ranges(requested_cut_ranges, start, end)
+        requested_insert_ranges = (
+            payload.insert_ranges if payload.insert_ranges is not None else clip.insert_ranges
+        )
+        insert_ranges = validate_insert_ranges(
+            requested_insert_ranges,
+            clip_start=start,
+            clip_end=end,
+            source_duration=source_duration,
+            cut_ranges=cut_ranges,
+        )
         bounds_changed = start != clip.start or end != clip.end
         cut_ranges_changed = cut_ranges != clip.cut_ranges
         if payload.reset_subtitles and payload.subtitles is not None:
@@ -360,6 +423,7 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
             "end": round(end, 3),
             "subtitles": subtitles,
             "cut_ranges": cut_ranges,
+            "insert_ranges": insert_ranges,
             "crop_keyframes": [],
         }
         next_framing_mode = payload.framing_mode if payload.framing_mode is not None else clip.framing_mode

@@ -12,6 +12,7 @@ import { api } from "./api";
 import type {
   ClipCandidate,
   CutRange,
+  InsertRange,
   JobDetail,
   JobSummary,
   SubtitleCue,
@@ -53,6 +54,13 @@ interface CutRangeEdit {
   id: string;
   start: string;
   end: string;
+}
+
+interface InsertRangeEdit {
+  id: string;
+  sourceStart: string;
+  sourceEnd: string;
+  insertAt: string;
 }
 
 interface SubtitleTimeEdit {
@@ -148,6 +156,15 @@ function cutsToEdits(clip: ClipCandidate): CutRangeEdit[] {
   }));
 }
 
+function insertsToEdits(clip: ClipCandidate): InsertRangeEdit[] {
+  return (clip.insert_ranges ?? []).map((insert, index) => ({
+    id: `insert-${index}-${insert.insert_at.toFixed(3)}`,
+    sourceStart: formatEditorTime(insert.source_start),
+    sourceEnd: formatEditorTime(insert.source_end),
+    insertAt: formatEditorTime(insert.insert_at),
+  }));
+}
+
 function cuesToTimeEdits(cues: SubtitleCue[], clipStart: number): Record<string, SubtitleTimeEdit> {
   return Object.fromEntries(
     cues.map((cue) => [
@@ -166,6 +183,28 @@ function sameCutRanges(left: CutRange[], right: CutRange[]): boolean {
     Math.abs(cut.start - right[index].start) <= 0.001
     && Math.abs(cut.end - right[index].end) <= 0.001
   ));
+}
+
+function sameInsertRanges(left: InsertRange[], right: InsertRange[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((insert, index) => (
+    Math.abs(insert.source_start - right[index].source_start) <= 0.001
+    && Math.abs(insert.source_end - right[index].source_end) <= 0.001
+    && Math.abs(insert.insert_at - right[index].insert_at) <= 0.001
+  ));
+}
+
+function effectiveClipDuration(clip: ClipCandidate): number {
+  const baseDuration = clip.end - clip.start;
+  const removedDuration = (clip.cut_ranges ?? []).reduce(
+    (total, cut) => total + cut.end - cut.start,
+    0,
+  );
+  const insertedDuration = (clip.insert_ranges ?? []).reduce(
+    (total, insert) => total + insert.source_end - insert.source_start,
+    0,
+  );
+  return Math.max(0, baseDuration - removedDuration + insertedDuration);
 }
 
 function countWords(text: string): number {
@@ -491,13 +530,20 @@ function ClipList({
               <h3>{clip.title}</h3>
               <div className="clip-meta">
                 <span>{formatEditorTime(clip.start)} → {formatEditorTime(clip.end)}</span>
-                <span>{Math.round(clip.end - clip.start)} sn</span>
+                <span>{Math.round(effectiveClipDuration(clip))} sn çıktı</span>
               </div>
               <div className="reason-row">
                 {clip.reasons.map((reason) => <span key={reason}>{reason}</span>)}
               </div>
             </div>
-            <div className={`score ${manual ? "manual" : ""}`}>
+            <div
+              className={`score ${manual ? "manual" : ""}`}
+              title={
+                manual
+                  ? "Manuel klip"
+                  : `İçerik: ${Math.round(clip.content_score)} · Bütünlük: ${Math.round(clip.integrity_score)}`
+              }
+            >
               <b>{manual ? "M" : Math.round(clip.score)}</b>
               <span>{manual ? "MANUEL" : "PUAN"}</span>
             </div>
@@ -599,6 +645,9 @@ function Editor({
     cuesToTimeEdits(clip.subtitles, clip.start),
   );
   const [cutEdits, setCutEdits] = useState<CutRangeEdit[]>(() => cutsToEdits(clip));
+  const [insertEdits, setInsertEdits] = useState<InsertRangeEdit[]>(() =>
+    insertsToEdits(clip),
+  );
   const [initialCues, setInitialCues] = useState<SubtitleCue[]>(() =>
     cloneSubtitleCues(clip.subtitles),
   );
@@ -618,6 +667,7 @@ function Editor({
     setCues(clip.subtitles);
     setCueTimeEdits(cuesToTimeEdits(clip.subtitles, clip.start));
     setCutEdits(cutsToEdits(clip));
+    setInsertEdits(insertsToEdits(clip));
     setPreviousCues(null);
     setFramingMode(clip.framing_mode);
     setFaceTracking(clip.face_tracking_enabled);
@@ -698,6 +748,31 @@ function Editor({
   };
   const removeCut = (cutId: string) => {
     setCutEdits((current) => current.filter((cut) => cut.id !== cutId));
+  };
+  const updateInsert = (
+    insertId: string,
+    field: "sourceStart" | "sourceEnd" | "insertAt",
+    value: string,
+  ) => {
+    setInsertEdits((current) =>
+      current.map((insert) => (
+        insert.id === insertId ? { ...insert, [field]: value } : insert
+      )),
+    );
+  };
+  const addInsert = () => {
+    setInsertEdits((current) => [
+      ...current,
+      {
+        id: `insert-new-${Date.now()}`,
+        sourceStart: "1:20.00",
+        sourceEnd: "1:30.00",
+        insertAt: formatEditorTime(clip.start),
+      },
+    ]);
+  };
+  const removeInsert = (insertId: string) => {
+    setInsertEdits((current) => current.filter((insert) => insert.id !== insertId));
   };
   const updateFraming = async (
     nextMode: "fit" | "balanced" | "fill",
@@ -830,6 +905,50 @@ function Editor({
     }).sort((left, right) => left.start - right.start);
     return parsed;
   };
+  const parsedInsertRanges = (
+    parsedStart: number,
+    parsedEnd: number,
+    cutRanges: CutRange[],
+  ): InsertRange[] => {
+    const sourceDuration = job.duration ?? 0;
+    if (insertEdits.length > 20) {
+      throw new Error("Bir klibe en fazla 20 parça eklenebilir.");
+    }
+    return insertEdits.map((insert, index) => {
+      const sourceStart = parseEditorTime(insert.sourceStart);
+      const sourceEnd = parseEditorTime(insert.sourceEnd);
+      const insertAt = parseEditorTime(insert.insertAt);
+      if (sourceStart === null || sourceEnd === null || insertAt === null) {
+        throw new Error(
+          "Eklenecek parça zamanlarını dakika:saniye biçiminde girin. Örnek: 1:20.00",
+        );
+      }
+      if (
+        sourceEnd <= sourceStart
+        || sourceEnd - sourceStart < 0.1
+        || sourceEnd > sourceDuration
+      ) {
+        throw new Error(
+          `${index + 1}. eklenecek kaynak aralığı video süresi içinde olmalıdır.`,
+        );
+      }
+      if (insertAt < parsedStart || insertAt > parsedEnd) {
+        throw new Error(
+          `${index + 1}. yerleştirme noktası hedef klibin başlangıç ve bitişi arasında olmalıdır.`,
+        );
+      }
+      if (cutRanges.some((cut) => cut.start < insertAt && insertAt < cut.end)) {
+        throw new Error(
+          `${index + 1}. yerleştirme noktası kesilecek bir aralığın içinde olamaz.`,
+        );
+      }
+      return {
+        source_start: Number(sourceStart.toFixed(3)),
+        source_end: Number(sourceEnd.toFixed(3)),
+        insert_at: Number(insertAt.toFixed(3)),
+      };
+    }).sort((left, right) => left.insert_at - right.insert_at);
+  };
   const save = async () => {
     setSaving(true);
     setMessage("");
@@ -837,11 +956,20 @@ function Editor({
     try {
       const { parsedStart, parsedEnd } = parsedBounds();
       const nextCutRanges = parsedCutRanges(parsedStart, parsedEnd);
+      const nextInsertRanges = parsedInsertRanges(
+        parsedStart,
+        parsedEnd,
+        nextCutRanges,
+      );
       const nextCues = parsedSubtitleCues(parsedStart, parsedEnd);
       const boundsChanged =
         Math.abs(parsedStart - clip.start) > 0.001
         || Math.abs(parsedEnd - clip.end) > 0.001;
       const cutsChanged = !sameCutRanges(nextCutRanges, clip.cut_ranges ?? []);
+      const insertsChanged = !sameInsertRanges(
+        nextInsertRanges,
+        clip.insert_ranges ?? [],
+      );
       if (false) {
         throw new Error(
           "Kelime sayısı değişen altyazı satırı zaman kaydırır. Cümle için satırları birleştirin ya da Zamanları transkriptten düzelt'i kullanın.",
@@ -853,16 +981,18 @@ function Editor({
         framing_mode: framingMode,
         face_tracking_enabled: framingMode === "fill" && faceTracking,
         cut_ranges: nextCutRanges,
+        insert_ranges: nextInsertRanges,
         subtitles: boundsChanged || cutsChanged ? undefined : nextCues,
       });
       onSaved(updated);
       replaceCues(updated.subtitles, updated.start);
       setCutEdits(cutsToEdits(updated));
+      setInsertEdits(insertsToEdits(updated));
       setStart(formatEditorTime(updated.start));
       setEnd(formatEditorTime(updated.end));
       setMessage(
-        boundsChanged || cutsChanged
-          ? "Süre, kesit ve altyazı yeni aralığa göre güncellendi."
+        boundsChanged || cutsChanged || insertsChanged
+          ? "Süre, kesit, eklenen parçalar ve altyazı zaman çizelgesi güncellendi."
           : "Değişiklikler kaydedildi.",
       );
       setMessageTone("success");
@@ -880,6 +1010,11 @@ function Editor({
     try {
       const { parsedStart, parsedEnd } = parsedBounds();
       const nextCutRanges = parsedCutRanges(parsedStart, parsedEnd);
+      const nextInsertRanges = parsedInsertRanges(
+        parsedStart,
+        parsedEnd,
+        nextCutRanges,
+      );
       const nextCues = parsedSubtitleCues(parsedStart, parsedEnd);
       const updated = await api.updateClip(job.id, clip.id, {
         start: parsedStart,
@@ -887,12 +1022,14 @@ function Editor({
         framing_mode: framingMode,
         face_tracking_enabled: framingMode === "fill" && faceTracking,
         cut_ranges: nextCutRanges,
+        insert_ranges: nextInsertRanges,
         subtitles: nextCues,
         reset_subtitles: true,
       });
       onSaved(updated);
       replaceCues(updated.subtitles, updated.start);
       setCutEdits(cutsToEdits(updated));
+      setInsertEdits(insertsToEdits(updated));
       setInitialCues(cloneSubtitleCues(updated.subtitles));
       setPreviousCues(null);
       setStart(formatEditorTime(updated.start));
@@ -913,17 +1050,24 @@ function Editor({
     try {
       const { parsedStart, parsedEnd } = parsedBounds();
       const nextCutRanges = parsedCutRanges(parsedStart, parsedEnd);
+      const nextInsertRanges = parsedInsertRanges(
+        parsedStart,
+        parsedEnd,
+        nextCutRanges,
+      );
       const updated = await api.updateClip(job.id, clip.id, {
         start: parsedStart,
         end: parsedEnd,
         framing_mode: framingMode,
         face_tracking_enabled: framingMode === "fill" && faceTracking,
         cut_ranges: nextCutRanges,
+        insert_ranges: nextInsertRanges,
         auto_cut_silence: true,
       });
       onSaved(updated);
       replaceCues(updated.subtitles, updated.start);
       setCutEdits(cutsToEdits(updated));
+      setInsertEdits(insertsToEdits(updated));
       setStart(formatEditorTime(updated.start));
       setEnd(formatEditorTime(updated.end));
       setMessage(
@@ -1180,6 +1324,67 @@ function Editor({
               type="button"
               className="tiny-button"
               onClick={() => removeCut(cut.id)}
+            >
+              Sil
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="cut-heading insert-heading">
+        <div>
+          <h3>Başka yerden parça ekle</h3>
+          <p>
+            Kaynak videodan alınacak mutlak zaman aralığını ve hedef klipte hangi
+            zamanın önüne yerleştirileceğini girin. Birleştirilmiş hali dışa
+            aktarılan videoda görünür.
+          </p>
+        </div>
+        <div className="cut-actions">
+          <button type="button" className="tiny-button" onClick={addInsert} disabled={saving}>
+            Parça ekle
+          </button>
+        </div>
+      </div>
+      <div className="cut-list">
+        {insertEdits.length === 0 ? (
+          <div className="cut-empty">Henüz başka bir zamandan eklenen parça yok.</div>
+        ) : insertEdits.map((insert, index) => (
+          <div key={insert.id} className="insert-row">
+            <span>{index + 1}</span>
+            <label>
+              Kaynak başlangıç
+              <input
+                value={insert.sourceStart}
+                inputMode="decimal"
+                placeholder="1:20.00"
+                onChange={(event) =>
+                  updateInsert(insert.id, "sourceStart", event.target.value)}
+              />
+            </label>
+            <label>
+              Kaynak bitiş
+              <input
+                value={insert.sourceEnd}
+                inputMode="decimal"
+                placeholder="1:30.00"
+                onChange={(event) =>
+                  updateInsert(insert.id, "sourceEnd", event.target.value)}
+              />
+            </label>
+            <label>
+              Yerleştirme noktası
+              <input
+                value={insert.insertAt}
+                inputMode="decimal"
+                placeholder="10:44.00"
+                onChange={(event) =>
+                  updateInsert(insert.id, "insertAt", event.target.value)}
+              />
+            </label>
+            <button
+              type="button"
+              className="tiny-button"
+              onClick={() => removeInsert(insert.id)}
             >
               Sil
             </button>

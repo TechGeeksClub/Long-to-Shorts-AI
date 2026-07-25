@@ -26,6 +26,12 @@ export interface CutRange {
   end: number;
 }
 
+export interface InsertRange {
+  source_start: number;
+  source_end: number;
+  insert_at: number;
+}
+
 export interface CropKeyframe {
   time: number;
   x: number;
@@ -42,9 +48,13 @@ export interface ClipCandidate {
   start: number;
   end: number;
   score: number;
+  content_score: number;
+  integrity_score: number;
+  selection_method: "heuristic" | "hybrid" | "manual";
   reasons: string[];
   subtitles: SubtitleCue[];
   cut_ranges: CutRange[];
+  insert_ranges: InsertRange[];
   crop_keyframes: CropKeyframe[];
   framing_mode: "fit" | "balanced" | "fill";
   face_tracking_enabled: boolean;

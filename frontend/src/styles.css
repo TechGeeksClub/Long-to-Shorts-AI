@@ -225,6 +225,12 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .cut-row label { color: #72726f; font-size: 9px; letter-spacing: .09em; text-transform: uppercase; }
 .cut-row input { display: block; width: 100%; margin-top: 6px; background: #080809; border: 1px solid #333; color: white; padding: 8px; font-size: 12px; outline: none; }
 .cut-row input:focus { border-color: var(--acid); }
+.insert-heading { margin-top: 28px; }
+.insert-row { display: grid; grid-template-columns: 28px 120px 120px 135px auto; align-items: end; gap: 9px; padding: 10px 11px; background: #101012; border: 1px solid #30351f; }
+.insert-row > span { color: var(--acid); font: 700 10px "Segoe UI"; padding-bottom: 9px; }
+.insert-row label { color: #72726f; font-size: 9px; letter-spacing: .07em; text-transform: uppercase; }
+.insert-row input { display: block; width: 100%; margin-top: 6px; background: #080809; border: 1px solid #3b4125; color: white; padding: 8px; font-size: 12px; outline: none; }
+.insert-row input:focus { border-color: var(--acid); }
 .inline-message { color: #aaa; font-size: 11px; max-width: 360px; text-align: right; line-height: 1.4; }
 .inline-message.success { color: var(--acid); }
 .inline-message.error { color: #ffb2b6; }
@@ -285,4 +291,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
   .framing-options { grid-template-columns:1fr; }
   .cut-row { grid-template-columns: 22px 1fr 1fr; }
   .cut-row button { grid-column: 2 / 4; }
+  .insert-row { grid-template-columns: 22px 1fr 1fr; }
+  .insert-row label:last-of-type { grid-column: 2 / 4; }
+  .insert-row button { grid-column: 2 / 4; }
 }

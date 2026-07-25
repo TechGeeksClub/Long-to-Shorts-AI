@@ -788,6 +788,77 @@ def test_cut_ranges_rebuild_and_shift_subtitles(tmp_path: Path) -> None:
     assert words[2]["start"] == 12.0
 
 
+def test_insert_range_is_validated_and_saved(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        frontend_dist=tmp_path / "missing-frontend",
+        minimum_free_bytes=0,
+    )
+    app = create_app(settings, start_worker=False)
+    job_dir = settings.data_dir / "jobs" / "job"
+    job_dir.mkdir(parents=True)
+    source = job_dir / "video.mp4"
+    source.write_bytes(b"video")
+    database = app.state.database
+    database.create_job("job", "video.mp4", source)
+    database.update_job(
+        "job",
+        status="ready",
+        stage="Hazır",
+        duration=700.0,
+        width=1920,
+        height=1080,
+    )
+    database.replace_clips(
+        "job",
+        [
+            ClipCandidate(
+                id="clip",
+                job_id="job",
+                rank=1,
+                title="Klip",
+                start=630,
+                end=690,
+                score=80,
+                reasons=[],
+                subtitles=[],
+            )
+        ],
+    )
+
+    with TestClient(app) as client:
+        response = client.patch(
+            "/api/jobs/job/clips/clip",
+            json={
+                "insert_ranges": [
+                    {
+                        "source_start": 80.0,
+                        "source_end": 90.0,
+                        "insert_at": 644.0,
+                    }
+                ]
+            },
+        )
+        invalid = client.patch(
+            "/api/jobs/job/clips/clip",
+            json={
+                "insert_ranges": [
+                    {
+                        "source_start": 80.0,
+                        "source_end": 90.0,
+                        "insert_at": 700.0,
+                    }
+                ]
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["insert_ranges"] == [
+        {"source_start": 80.0, "source_end": 90.0, "insert_at": 644.0}
+    ]
+    assert invalid.status_code == 422
+
+
 def test_auto_cut_silence_uses_transcript_speech_gaps(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path / "data",

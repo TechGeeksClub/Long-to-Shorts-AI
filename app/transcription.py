@@ -4,6 +4,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from app.transcript_units import annotate_transcript_segments
+
 
 class TranscriptionError(RuntimeError):
     pass
@@ -81,5 +83,4 @@ def transcribe(
         raise TranscriptionError("Videoda yazıya dönüştürülebilecek konuşma bulunamadı.")
     if progress_callback:
         progress_callback(1.0)
-    return segments, str(info.language or "unknown")
-
+    return annotate_transcript_segments(segments), str(info.language or "unknown")

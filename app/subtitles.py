@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.models import CutRange, SubtitleCue, SubtitleWord
+from app.timeline import TimelineSegment
 
 DISPLAY_BRIDGE_SECONDS = 0.75
 MIN_ASS_EVENT_SECONDS = 0.08
@@ -269,6 +270,101 @@ def apply_cut_ranges_to_subtitles(
         end = max(start + 0.01, shift_time_after_cuts(cue.end, clip_start, normalized_cuts))
         shifted.append(cue.model_copy(update={"start": start, "end": end}))
     return shifted
+
+
+def compose_subtitles_for_timeline(
+    *,
+    base_cues: list[SubtitleCue],
+    transcript_segments: list[dict[str, Any]],
+    timeline: list[TimelineSegment],
+    output_start: float,
+) -> list[SubtitleCue]:
+    composed: list[SubtitleCue] = []
+    output_cursor = output_start
+    for timeline_index, segment in enumerate(timeline):
+        source_cues = (
+            base_cues
+            if segment.kind == "base"
+            else build_subtitle_cues(
+                transcript_segments,
+                segment.source_start,
+                segment.source_end,
+            )
+        )
+        sliced = _slice_subtitles_to_range(
+            source_cues,
+            segment.source_start,
+            segment.source_end,
+        )
+        offset = output_cursor - segment.source_start
+        for cue_index, cue in enumerate(sliced):
+            words = [
+                word.model_copy(
+                    update={
+                        "start": word.start + offset,
+                        "end": word.end + offset,
+                    }
+                )
+                for word in cue.words
+            ]
+            composed.append(
+                cue.model_copy(
+                    update={
+                        "id": f"{cue.id}-timeline-{timeline_index}-{cue_index}",
+                        "start": cue.start + offset,
+                        "end": cue.end + offset,
+                        "words": words,
+                    }
+                )
+            )
+        output_cursor += segment.duration
+    return normalize_cues(composed, output_start, output_cursor)
+
+
+def _slice_subtitles_to_range(
+    cues: list[SubtitleCue],
+    source_start: float,
+    source_end: float,
+) -> list[SubtitleCue]:
+    sliced: list[SubtitleCue] = []
+    for cue in cues:
+        if cue.end <= source_start or cue.start >= source_end:
+            continue
+        words = cue_words(cue) if cue.words else []
+        if words:
+            kept_words = [
+                word.model_copy(
+                    update={
+                        "start": max(source_start, word.start),
+                        "end": min(source_end, word.end),
+                    }
+                )
+                for word in words
+                if source_start <= (word.start + word.end) / 2 < source_end
+            ]
+            if not kept_words:
+                continue
+            text = cue.text if len(kept_words) == len(words) else words_text(kept_words)
+            sliced.append(
+                cue.model_copy(
+                    update={
+                        "start": kept_words[0].start,
+                        "end": kept_words[-1].end,
+                        "text": text,
+                        "words": kept_words,
+                    }
+                )
+            )
+            continue
+        sliced.append(
+            cue.model_copy(
+                update={
+                    "start": max(source_start, cue.start),
+                    "end": min(source_end, cue.end),
+                }
+            )
+        )
+    return sliced
 
 
 def subtitle_words_from_segments(

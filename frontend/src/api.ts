@@ -1,4 +1,11 @@
-import type { ClipCandidate, CutRange, JobDetail, JobSummary, SubtitleCue } from "./types";
+import type {
+  ClipCandidate,
+  CutRange,
+  InsertRange,
+  JobDetail,
+  JobSummary,
+  SubtitleCue,
+} from "./types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -62,6 +69,7 @@ export const api = {
       face_tracking_enabled?: boolean;
       subtitles?: SubtitleCue[];
       cut_ranges?: CutRange[];
+      insert_ranges?: InsertRange[];
       reset_subtitles?: boolean;
       auto_cut_silence?: boolean;
     },

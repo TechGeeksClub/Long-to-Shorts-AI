@@ -12,6 +12,7 @@ from app.models import (
     CropKeyframe,
     CutRange,
     Export,
+    InsertRange,
     JobDetail,
     JobSummary,
     SubtitleCue,
@@ -69,9 +70,13 @@ class Database:
                     start REAL NOT NULL,
                     end REAL NOT NULL,
                     score REAL NOT NULL,
+                    content_score REAL NOT NULL DEFAULT 0,
+                    integrity_score REAL NOT NULL DEFAULT 0,
+                    selection_method TEXT NOT NULL DEFAULT 'heuristic',
                     reasons_json TEXT NOT NULL,
                     subtitles_json TEXT NOT NULL,
                     cut_ranges_json TEXT NOT NULL DEFAULT '[]',
+                    insert_ranges_json TEXT NOT NULL DEFAULT '[]',
                     crop_keyframes_json TEXT NOT NULL DEFAULT '[]',
                     framing_mode TEXT NOT NULL DEFAULT 'fit',
                     face_tracking_enabled INTEGER NOT NULL DEFAULT 0,
@@ -122,6 +127,28 @@ class Database:
                     """
                     ALTER TABLE clips
                     ADD COLUMN cut_ranges_json TEXT NOT NULL DEFAULT '[]'
+                    """
+                )
+            if "content_score" not in clip_columns:
+                connection.execute(
+                    "ALTER TABLE clips ADD COLUMN content_score REAL NOT NULL DEFAULT 0"
+                )
+            if "integrity_score" not in clip_columns:
+                connection.execute(
+                    "ALTER TABLE clips ADD COLUMN integrity_score REAL NOT NULL DEFAULT 0"
+                )
+            if "selection_method" not in clip_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE clips
+                    ADD COLUMN selection_method TEXT NOT NULL DEFAULT 'heuristic'
+                    """
+                )
+            if "insert_ranges_json" not in clip_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE clips
+                    ADD COLUMN insert_ranges_json TEXT NOT NULL DEFAULT '[]'
                     """
                 )
             export_columns = {
@@ -215,10 +242,12 @@ class Database:
             connection.executemany(
                 """
                 INSERT INTO clips (
-                    id, job_id, rank, title, start, end, score, reasons_json,
-                    subtitles_json, cut_ranges_json, crop_keyframes_json, framing_mode,
+                    id, job_id, rank, title, start, end, score, content_score,
+                    integrity_score, selection_method, reasons_json,
+                    subtitles_json, cut_ranges_json, insert_ranges_json,
+                    crop_keyframes_json, framing_mode,
                     face_tracking_enabled, selected
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -229,12 +258,19 @@ class Database:
                         clip.start,
                         clip.end,
                         clip.score,
+                        clip.content_score,
+                        clip.integrity_score,
+                        clip.selection_method,
                         json.dumps(clip.reasons, ensure_ascii=False),
                         json.dumps(
                             [cue.model_dump() for cue in clip.subtitles], ensure_ascii=False
                         ),
                         json.dumps(
                             [cut.model_dump() for cut in clip.cut_ranges], ensure_ascii=False
+                        ),
+                        json.dumps(
+                            [insert.model_dump() for insert in clip.insert_ranges],
+                            ensure_ascii=False,
                         ),
                         json.dumps(
                             [keyframe.model_dump() for keyframe in clip.crop_keyframes]
@@ -252,10 +288,12 @@ class Database:
             connection.execute(
                 """
                 INSERT INTO clips (
-                    id, job_id, rank, title, start, end, score, reasons_json,
-                    subtitles_json, cut_ranges_json, crop_keyframes_json, framing_mode,
+                    id, job_id, rank, title, start, end, score, content_score,
+                    integrity_score, selection_method, reasons_json,
+                    subtitles_json, cut_ranges_json, insert_ranges_json,
+                    crop_keyframes_json, framing_mode,
                     face_tracking_enabled, selected
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clip.id,
@@ -265,12 +303,19 @@ class Database:
                     clip.start,
                     clip.end,
                     clip.score,
+                    clip.content_score,
+                    clip.integrity_score,
+                    clip.selection_method,
                     json.dumps(clip.reasons, ensure_ascii=False),
                     json.dumps(
                         [cue.model_dump() for cue in clip.subtitles], ensure_ascii=False
                     ),
                     json.dumps(
                         [cut.model_dump() for cut in clip.cut_ranges], ensure_ascii=False
+                    ),
+                    json.dumps(
+                        [insert.model_dump() for insert in clip.insert_ranges],
+                        ensure_ascii=False,
                     ),
                     json.dumps(
                         [keyframe.model_dump() for keyframe in clip.crop_keyframes]
@@ -291,6 +336,10 @@ class Database:
             elif key == "cut_ranges":
                 encoded["cut_ranges_json"] = json.dumps(
                     [cut.model_dump() for cut in value], ensure_ascii=False
+                )
+            elif key == "insert_ranges":
+                encoded["insert_ranges_json"] = json.dumps(
+                    [insert.model_dump() for insert in value], ensure_ascii=False
                 )
             elif key == "crop_keyframes":
                 encoded["crop_keyframes_json"] = json.dumps(
@@ -425,11 +474,18 @@ class Database:
             start=row["start"],
             end=row["end"],
             score=row["score"],
+            content_score=row["content_score"],
+            integrity_score=row["integrity_score"],
+            selection_method=row["selection_method"],
             reasons=json.loads(row["reasons_json"]),
             subtitles=[SubtitleCue.model_validate(cue) for cue in json.loads(row["subtitles_json"])],
             cut_ranges=[
                 CutRange.model_validate(cut)
                 for cut in json.loads(row["cut_ranges_json"])
+            ],
+            insert_ranges=[
+                InsertRange.model_validate(insert)
+                for insert in json.loads(row["insert_ranges_json"])
             ],
             crop_keyframes=[
                 CropKeyframe.model_validate(frame)

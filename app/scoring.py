@@ -64,7 +64,10 @@ class Candidate:
     words: list[dict[str, Any]]
     segments: list[dict[str, Any]]
     topic_tokens: set[str]
+    candidate_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     score: float = 0.0
+    content_score: float = 0.0
+    integrity_score: float = 0.0
     reasons: list[str] = field(default_factory=list)
 
 
@@ -358,17 +361,15 @@ def _title_for(candidate: Candidate, rank: int) -> str:
     return title
 
 
-def score_candidates(
+def score_candidate_pool(
     *,
-    job_id: str,
     segments: list[dict[str, Any]],
     duration: float,
     rms_envelope: np.ndarray,
     rms_bucket_seconds: float,
     min_seconds: float = 30.0,
     max_seconds: float = 60.0,
-    count: int = 10,
-) -> list[ClipCandidate]:
+) -> list[Candidate]:
     raw = _build_topic_candidates(segments, duration, min_seconds, max_seconds)
     if not raw:
         return []
@@ -387,7 +388,11 @@ def score_candidates(
         candidate_duration = candidate.end - candidate.start
         all_tokens = _tokens(candidate.text)
         meaningful_tokens = _tokens(candidate.text, meaningful=True)
-        density = len(candidate.words) / max(1.0, candidate_duration) / max(0.01, max_density)
+        density = (
+            len(candidate.words)
+            / max(1.0, candidate_duration)
+            / max(0.01, max_density)
+        )
         coherence = _topic_coherence(candidate)
         filler_ratio = sum(token in FILLER_WORDS for token in all_tokens) / max(1, len(all_tokens))
         opening_tokens = set(_tokens(" ".join(candidate.text.split()[:35])))
@@ -395,7 +400,12 @@ def score_candidates(
         token_set = set(all_tokens)
         explanation = bool(token_set & EXPLANATION_TERMS)
         conclusion = bool(token_set & CONCLUSION_TERMS)
-        narrative = min(1.0, (0.45 if question else 0) + (0.35 if explanation else 0) + (0.2 if conclusion else 0))
+        narrative = min(
+            1.0,
+            (0.45 if question else 0)
+            + (0.35 if explanation else 0)
+            + (0.2 if conclusion else 0),
+        )
         lexical = len(token_sets[index]) / max(1, len(meaningful_tokens))
         rarity = (
             sum(
@@ -438,6 +448,20 @@ def score_candidates(
             - filler_ratio * 40
             - silence_penalty * 25
         )
+        content_score = (
+            narrative * 28
+            + density * 18
+            + lexical * 12
+            + min(1.0, rarity) * 12
+            + energy * 15
+            + coherence * 15
+            - filler_ratio * 30
+        )
+        integrity_score = (
+            coherence * 45
+            + boundary * 40
+            + (1 - min(1.0, silence_penalty / 0.4)) * 15
+        )
         reasons: list[str] = []
         if coherence >= 0.62:
             reasons.append("Konu bütünlüğü")
@@ -454,18 +478,38 @@ def score_candidates(
         if not reasons:
             reasons.append("Tutarlı konu akışı")
         candidate.score = round(max(0.0, min(100.0, score)), 1)
+        candidate.content_score = round(max(0.0, min(100.0, content_score)), 1)
+        candidate.integrity_score = round(max(0.0, min(100.0, integrity_score)), 1)
         candidate.reasons = reasons[:3]
+    return raw
 
-    selected = _select_diverse_candidates(
-        raw,
+
+def select_candidate_pool(
+    candidates: list[Candidate],
+    *,
+    count: int,
+    duration: float,
+    min_seconds: float,
+    max_seconds: float,
+) -> list[Candidate]:
+    return _select_diverse_candidates(
+        candidates,
         count=count,
         duration=duration,
         min_seconds=min_seconds,
         max_seconds=max_seconds,
     )
 
+
+def candidates_to_clips(
+    *,
+    job_id: str,
+    candidates: list[Candidate],
+    segments: list[dict[str, Any]],
+    selection_method: str = "heuristic",
+) -> list[ClipCandidate]:
     result: list[ClipCandidate] = []
-    for rank, candidate in enumerate(selected, start=1):
+    for rank, candidate in enumerate(candidates, start=1):
         result.append(
             ClipCandidate(
                 id=str(uuid.uuid4()),
@@ -477,7 +521,43 @@ def score_candidates(
                 score=candidate.score,
                 reasons=candidate.reasons,
                 subtitles=build_subtitle_cues(segments, candidate.start, candidate.end),
+                content_score=candidate.content_score,
+                integrity_score=candidate.integrity_score,
+                selection_method=selection_method,
                 selected=True,
             )
         )
     return result
+
+
+def score_candidates(
+    *,
+    job_id: str,
+    segments: list[dict[str, Any]],
+    duration: float,
+    rms_envelope: np.ndarray,
+    rms_bucket_seconds: float,
+    min_seconds: float = 30.0,
+    max_seconds: float = 60.0,
+    count: int = 10,
+) -> list[ClipCandidate]:
+    raw = score_candidate_pool(
+        segments=segments,
+        duration=duration,
+        rms_envelope=rms_envelope,
+        rms_bucket_seconds=rms_bucket_seconds,
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+    )
+    selected = select_candidate_pool(
+        raw,
+        count=count,
+        duration=duration,
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+    )
+    return candidates_to_clips(
+        job_id=job_id,
+        candidates=selected,
+        segments=segments,
+    )

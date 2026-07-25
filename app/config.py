@@ -36,6 +36,14 @@ class Settings:
         "no",
         "off",
     }
+    semantic_clip_enabled: bool = os.getenv("LTS_SEMANTIC_CLIP_ENABLED", "1").lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    semantic_clip_model: str = os.getenv("LTS_SEMANTIC_CLIP_MODEL", "qwen2.5:7b")
+    semantic_candidate_count: int = int(os.getenv("LTS_SEMANTIC_CANDIDATES", "60"))
     ollama_timeout_seconds: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 
     @property

@@ -579,6 +579,12 @@ def write_youtube_metadata(
         llm_error = "Profesyonel LLM SEO bu dışa aktarmada kapalı."
         llm_model = settings.ollama_seo_model
 
+    effective_duration = (
+        clip.end
+        - clip.start
+        - sum(cut.end - cut.start for cut in clip.cut_ranges)
+        + sum(insert.source_end - insert.source_start for insert in clip.insert_ranges)
+    )
     markdown = [
         "# YouTube SEO Paketi",
         "",
@@ -587,10 +593,25 @@ def write_youtube_metadata(
         f"- Kaynak dosya: `{source_filename}`",
         f"- Klip: `{clip.rank}`",
         f"- Kaynak zaman: `{clip.start:.2f}` - `{clip.end:.2f}`",
-        f"- Tahmini süre: `{clip.end - clip.start:.2f} sn`",
+        f"- Tahmini süre: `{effective_duration:.2f} sn`",
         f"- SEO üretici: `{'Ollama ' + llm_model if llm_payload else 'Yerel yedek'}`",
         "",
     ]
+    if clip.insert_ranges:
+        markdown.extend(
+            [
+                "## Eklenen Kaynak Parçaları",
+                "",
+                *[
+                    (
+                        f"- `{insert.source_start:.2f}` - `{insert.source_end:.2f}` "
+                        f"aralığı `{insert.insert_at:.2f}` noktasından önce"
+                    )
+                    for insert in clip.insert_ranges
+                ],
+                "",
+            ]
+        )
     if llm_payload:
         best_title = llm_payload["titles"][0]
         best_description = llm_payload["descriptions"][0]

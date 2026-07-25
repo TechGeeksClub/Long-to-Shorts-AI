@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from app.database import Database
-from app.models import ClipCandidate
+from app.models import ClipCandidate, InsertRange
 
 
 def test_active_jobs_are_marked_interrupted(tmp_path: Path) -> None:
@@ -50,3 +50,31 @@ def test_face_tracking_is_disabled_by_default_and_persisted(tmp_path: Path) -> N
     balanced = database.get_clip("clip")
     assert balanced is not None
     assert balanced.framing_mode == "balanced"
+
+
+def test_insert_ranges_are_persisted(tmp_path: Path) -> None:
+    database = Database(tmp_path / "app.db")
+    database.initialize()
+    database.create_job("job", "video.mp4", tmp_path / "video.mp4")
+    clip = ClipCandidate(
+        id="clip",
+        job_id="job",
+        rank=1,
+        title="Klip",
+        start=630,
+        end=690,
+        score=90,
+        reasons=[],
+        subtitles=[],
+        insert_ranges=[
+            InsertRange(source_start=80, source_end=90, insert_at=644)
+        ],
+    )
+
+    database.replace_clips("job", [clip])
+    saved = database.get_clip("clip")
+
+    assert saved is not None
+    assert saved.insert_ranges == [
+        InsertRange(source_start=80, source_end=90, insert_at=644)
+    ]

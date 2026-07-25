@@ -9,6 +9,7 @@ from typing import Any
 from app.config import Settings
 from app.database import Database
 from app.face_tracking import center_crop, track_face_crop, write_crop_commands
+from app.hybrid_selection import select_hybrid_clips
 from app.media import (
     MediaError,
     extract_audio,
@@ -18,17 +19,18 @@ from app.media import (
     render_video,
 )
 from app.models import ClipCandidate, SubtitleCue
-from app.scoring import score_candidates
 from app.seo import write_youtube_metadata
 from app.subtitles import (
     apply_cut_ranges_to_subtitles,
-    kept_ranges_after_cuts,
+    compose_subtitles_for_timeline,
     normalize_cues,
     normalize_cut_ranges,
     retime_cues_from_transcript,
     write_ass,
 )
+from app.timeline import TimelineSegment, build_timeline_segments
 from app.transcription import TranscriptionError, transcribe
+from app.transcript_units import annotate_transcript_segments
 
 
 logger = logging.getLogger(__name__)
@@ -97,31 +99,30 @@ class Processor:
                     self.settings.whisper_model,
                     transcription_progress,
                 )
-                transcript_path.write_text(
-                    json.dumps(
-                        {"language": language, "segments": segments},
-                        ensure_ascii=False,
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
+            segments = annotate_transcript_segments(segments)
+            transcript_path.write_text(
+                json.dumps(
+                    {"language": language, "segments": segments},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
             self.database.update_job(
                 job_id,
                 language=language,
                 transcript_path=str(transcript_path),
                 progress=0.84,
-                stage="En iyi bölümler seçiliyor",
+                stage="Klip adayları anlam ve bütünlük açısından değerlendiriliyor",
             )
             envelope, bucket_seconds = load_rms_envelope(audio_path)
-            clips = score_candidates(
+            clips = select_hybrid_clips(
                 job_id=job_id,
                 segments=segments,
                 duration=info.duration,
                 rms_envelope=envelope,
                 rms_bucket_seconds=bucket_seconds,
-                min_seconds=self.settings.min_clip_seconds,
-                max_seconds=self.settings.max_clip_seconds,
-                count=self.settings.candidate_count,
+                settings=self.settings,
             )
             if not clips:
                 raise MediaError("Uygun kısa video adayı oluşturulamadı.")
@@ -202,30 +203,38 @@ class Processor:
                 stage=f"{clip.rank}. klip dikey kadraja alınıyor",
             )
             cut_ranges = normalize_cut_ranges(clip.cut_ranges, clip.start, clip.end)
+            timeline = build_timeline_segments(
+                clip_start=clip.start,
+                clip_end=clip.end,
+                cut_ranges=cut_ranges,
+                insert_ranges=clip.insert_ranges,
+            )
             render_source = source
             render_start = clip.start
             render_end = clip.end
-            if cut_ranges:
+            if cut_ranges or clip.insert_ranges:
                 self.database.update_job(
                     job_id,
-                    stage=f"{clip.rank}. klipte işaretlenen kısımlar çıkarılıyor",
+                    stage=f"{clip.rank}. klibin zaman çizelgesi oluşturuluyor",
                 )
-                cut_source = work_dir / "cut-source.mp4"
+                composed_source = work_dir / "composed-source.mp4"
 
-                def cut_progress(value: float) -> None:
+                def composition_progress(value: float) -> None:
                     self.database.update_export(export_id, progress=0.01 + value * 0.14)
 
-                kept_ranges = kept_ranges_after_cuts(clip.start, clip.end, cut_ranges)
-                cut_duration = render_cut_source(
+                composed_duration = render_cut_source(
                     source=source,
-                    output=cut_source,
-                    kept_ranges=kept_ranges,
+                    output=composed_source,
+                    kept_ranges=[
+                        (segment.source_start, segment.source_end)
+                        for segment in timeline
+                    ],
                     ffmpeg=self.settings.ffmpeg,
-                    progress_callback=cut_progress,
+                    progress_callback=composition_progress,
                 )
-                render_source = cut_source
+                render_source = composed_source
                 render_start = 0.0
-                render_end = cut_duration
+                render_end = composed_duration
 
             tracking_active = clip.framing_mode == "fill" and clip.face_tracking_enabled
             if clip.framing_mode == "fill":
@@ -253,12 +262,17 @@ class Processor:
                 job_id,
                 stage=f"{clip.rank}. klip altyazısı sese senkronize ediliyor",
             )
-            synced_subtitles = self._sync_subtitles_for_export(job, clip, cut_ranges)
-            if synced_subtitles != clip.subtitles:
+            synced_subtitles = self._sync_subtitles_for_export(
+                job,
+                clip,
+                cut_ranges,
+                timeline,
+            )
+            if not clip.insert_ranges and synced_subtitles != clip.subtitles:
                 self.database.update_clip(clip.id, subtitles=synced_subtitles)
                 clip = clip.model_copy(update={"subtitles": synced_subtitles})
             write_ass(
-                clip.subtitles,
+                synced_subtitles,
                 clip.start,
                 work_dir / "subtitles.ass",
                 subtitle_margin_v=int(export_record["subtitle_margin_v"]),
@@ -290,7 +304,7 @@ class Processor:
             )
             write_youtube_metadata(
                 job=job,
-                clip=clip,
+                clip=clip.model_copy(update={"subtitles": synced_subtitles}),
                 export_id=export_id,
                 output=output,
                 destination=metadata_path,
@@ -322,23 +336,57 @@ class Processor:
         job: Any,
         clip: ClipCandidate,
         cut_ranges: list,
+        timeline: list[TimelineSegment],
     ) -> list[SubtitleCue]:
         transcript_value = job["transcript_path"]
         transcript_path = Path(transcript_value) if transcript_value else None
         if transcript_path is None or not transcript_path.is_file():
-            return normalize_cues(clip.subtitles, clip.start, clip.end)
+            base_subtitles = normalize_cues(clip.subtitles, clip.start, clip.end)
+            if clip.insert_ranges:
+                return compose_subtitles_for_timeline(
+                    base_cues=base_subtitles,
+                    transcript_segments=[],
+                    timeline=timeline,
+                    output_start=clip.start,
+                )
+            return apply_cut_ranges_to_subtitles(
+                base_subtitles,
+                clip.start,
+                clip.end,
+                cut_ranges,
+            )
         try:
             transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
             segments = transcript["segments"]
         except (OSError, KeyError, TypeError, json.JSONDecodeError) as exc:
             logger.warning("Subtitle sync skipped for clip %s: %s", clip.id, exc)
-            return normalize_cues(clip.subtitles, clip.start, clip.end)
+            base_subtitles = normalize_cues(clip.subtitles, clip.start, clip.end)
+            if clip.insert_ranges:
+                return compose_subtitles_for_timeline(
+                    base_cues=base_subtitles,
+                    transcript_segments=[],
+                    timeline=timeline,
+                    output_start=clip.start,
+                )
+            return apply_cut_ranges_to_subtitles(
+                base_subtitles,
+                clip.start,
+                clip.end,
+                cut_ranges,
+            )
         source_subtitles = retime_cues_from_transcript(
             clip.subtitles,
             segments,
             clip.start,
             clip.end,
         )
+        if clip.insert_ranges:
+            return compose_subtitles_for_timeline(
+                base_cues=source_subtitles,
+                transcript_segments=segments,
+                timeline=timeline,
+                output_start=clip.start,
+            )
         return apply_cut_ranges_to_subtitles(
             source_subtitles,
             clip.start,

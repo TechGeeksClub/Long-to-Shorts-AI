@@ -39,6 +39,12 @@ class CutRange(BaseModel):
     end: float
 
 
+class InsertRange(BaseModel):
+    source_start: float = Field(ge=0, allow_inf_nan=False)
+    source_end: float = Field(gt=0, allow_inf_nan=False)
+    insert_at: float = Field(ge=0, allow_inf_nan=False)
+
+
 class CropKeyframe(BaseModel):
     time: float
     x: int
@@ -57,7 +63,11 @@ class ClipCandidate(BaseModel):
     score: float
     reasons: list[str]
     subtitles: list[SubtitleCue]
+    content_score: float = 0.0
+    integrity_score: float = 0.0
+    selection_method: Literal["heuristic", "hybrid", "manual"] = "heuristic"
     cut_ranges: list[CutRange] = Field(default_factory=list)
+    insert_ranges: list[InsertRange] = Field(default_factory=list)
     crop_keyframes: list[CropKeyframe] = Field(default_factory=list)
     framing_mode: FramingMode = "fit"
     face_tracking_enabled: bool = False
@@ -114,6 +124,7 @@ class ClipUpdate(BaseModel):
     face_tracking_enabled: bool | None = None
     subtitles: list[SubtitleCue] | None = None
     cut_ranges: list[CutRange] | None = None
+    insert_ranges: list[InsertRange] | None = None
     reset_subtitles: bool = False
     auto_cut_silence: bool = False
 
