@@ -8,14 +8,18 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from app.models import (
+    AnalysisReport,
+    CorrectionReport,
     ClipCandidate,
     CropKeyframe,
     CutRange,
+    EditSettings,
     Export,
     InsertRange,
     JobDetail,
     JobSummary,
     SubtitleCue,
+    YoutubePackage,
 )
 
 
@@ -108,6 +112,19 @@ class Database:
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(clips)").fetchall()
             }
+            job_columns = {row["name"] for row in connection.execute("PRAGMA table_info(jobs)")}
+            if "source_type" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN source_type TEXT NOT NULL DEFAULT 'upload'")
+            if "source_url" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN source_url TEXT")
+            if "analysis_json" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN analysis_json TEXT")
+            if "correction_json" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN correction_json TEXT")
+            if "youtube_json" not in clip_columns:
+                connection.execute("ALTER TABLE clips ADD COLUMN youtube_json TEXT NOT NULL DEFAULT '{}'")
+            if "topic_id" not in clip_columns:
+                connection.execute("ALTER TABLE clips ADD COLUMN topic_id TEXT")
             if "face_tracking_enabled" not in clip_columns:
                 connection.execute(
                     """
@@ -190,6 +207,17 @@ class Database:
                     ADD COLUMN balanced_vertical_offset INTEGER NOT NULL DEFAULT 0
                     """
                 )
+            for table, columns in (("clips", clip_columns), ("exports", export_columns)):
+                if "edit_settings_json" not in columns:
+                    connection.execute(
+                        f"ALTER TABLE {table} ADD COLUMN edit_settings_json TEXT NOT NULL DEFAULT '{{}}'"
+                    )
+            if "is_preview" not in export_columns:
+                connection.execute(
+                    "ALTER TABLE exports ADD COLUMN is_preview INTEGER NOT NULL DEFAULT 0"
+                )
+            if "youtube_json" not in export_columns:
+                connection.execute("ALTER TABLE exports ADD COLUMN youtube_json TEXT NOT NULL DEFAULT '{}'")
 
     def interrupt_active_jobs(self) -> None:
         now = utc_now()
@@ -199,7 +227,7 @@ class Database:
                 UPDATE jobs
                 SET status = 'interrupted', stage = 'Uygulama yeniden başlatıldı',
                     error = 'İşlem uygulama kapanırken yarıda kaldı.', updated_at = ?
-                WHERE status IN ('queued', 'analyzing', 'exporting')
+                WHERE status IN ('queued', 'importing', 'analyzing', 'exporting')
                 """,
                 (now,),
             )
@@ -212,17 +240,26 @@ class Database:
                 """,
                 (now,),
             )
+            connection.execute(
+                """UPDATE clips SET youtube_json = json_set(youtube_json, '$.status', 'failed',
+                    '$.error', 'Uygulama kapanırken YouTube hazırlığı yarıda kaldı; yeniden üretebilirsin.')
+                    WHERE json_extract(youtube_json, '$.status') IN ('queued', 'generating')"""
+            )
 
-    def create_job(self, job_id: str, filename: str, source_path: Path) -> None:
+    def create_job(
+        self, job_id: str, filename: str, source_path: Path, *,
+        source_type: str = "upload", source_url: str | None = None,
+    ) -> None:
         now = utc_now()
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO jobs (
-                    id, filename, source_path, status, progress, stage, created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', 0, 'Sırada bekliyor', ?, ?)
+                    id, filename, source_path, source_type, source_url,
+                    status, progress, stage, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'queued', 0, 'Sırada bekliyor', ?, ?)
                 """,
-                (job_id, filename, str(source_path), now, now),
+                (job_id, filename, str(source_path), source_type, source_url, now, now),
             )
 
     def update_job(self, job_id: str, **values: Any) -> None:
@@ -246,8 +283,8 @@ class Database:
                     integrity_score, selection_method, reasons_json,
                     subtitles_json, cut_ranges_json, insert_ranges_json,
                     crop_keyframes_json, framing_mode,
-                    face_tracking_enabled, selected
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    face_tracking_enabled, selected, edit_settings_json, topic_id, youtube_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -278,6 +315,9 @@ class Database:
                         clip.framing_mode,
                         int(clip.face_tracking_enabled),
                         int(clip.selected),
+                        clip.edit_settings.model_dump_json(),
+                        clip.topic_id,
+                        clip.youtube.model_dump_json(),
                     )
                     for clip in clips
                 ],
@@ -292,8 +332,8 @@ class Database:
                     integrity_score, selection_method, reasons_json,
                     subtitles_json, cut_ranges_json, insert_ranges_json,
                     crop_keyframes_json, framing_mode,
-                    face_tracking_enabled, selected
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    face_tracking_enabled, selected, edit_settings_json, topic_id, youtube_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     clip.id,
@@ -323,7 +363,50 @@ class Database:
                     clip.framing_mode,
                     int(clip.face_tracking_enabled),
                     int(clip.selected),
+                    clip.edit_settings.model_dump_json(),
+                    clip.topic_id,
+                    clip.youtube.model_dump_json(),
                 ),
+            )
+
+    def merge_agent_analysis(
+        self, job_id: str, clips: list[ClipCandidate], report: AnalysisReport,
+    ) -> None:
+        """Commit a new analysis without replacing user edits or cascading exports."""
+        with self.connect() as connection:
+            existing = {
+                row["id"] for row in connection.execute("SELECT id FROM clips WHERE job_id = ?", (job_id,))
+            }
+            rank = connection.execute(
+                "SELECT COALESCE(MAX(rank), 0) FROM clips WHERE job_id = ?", (job_id,),
+            ).fetchone()[0]
+            for clip in clips:
+                if clip.job_id != job_id or clip.selection_method != "agent":
+                    raise ValueError("Konu analizi başka bir işe ait kesit içeriyor.")
+                if clip.id in existing:
+                    continue
+                rank += 1
+                connection.execute(
+                    """INSERT INTO clips (
+                        id, job_id, rank, title, start, end, score, content_score,
+                        integrity_score, selection_method, reasons_json, subtitles_json,
+                        topic_id, selected, edit_settings_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (clip.id, job_id, rank, clip.title, clip.start, clip.end, clip.score,
+                     clip.content_score, clip.integrity_score, clip.selection_method,
+                     json.dumps(clip.reasons, ensure_ascii=False),
+                     json.dumps([cue.model_dump() for cue in clip.subtitles], ensure_ascii=False),
+                     clip.topic_id, int(clip.selected), clip.edit_settings.model_dump_json()),
+                )
+                existing.add(clip.id)
+            if any(clip_id not in existing for clip_id in report.clip_ids):
+                raise ValueError("Konu planındaki kesitlerden biri kaydedilemedi.")
+            connection.execute(
+                """UPDATE jobs SET analysis_json = ?, status = 'ready', progress = 1,
+                   stage = ?, error = NULL, updated_at = ? WHERE id = ?""",
+                (report.model_dump_json(),
+                 f"Codex {len(report.topics)} konu ve {len(report.clip_ids)} kesit hazırladı",
+                 utc_now(), job_id),
             )
 
     def update_clip(self, clip_id: str, **values: Any) -> None:
@@ -345,6 +428,10 @@ class Database:
                 encoded["crop_keyframes_json"] = json.dumps(
                     [frame.model_dump() for frame in value]
                 )
+            elif key == "youtube":
+                encoded["youtube_json"] = YoutubePackage.model_validate(value).model_dump_json()
+            elif key == "edit_settings":
+                encoded["edit_settings_json"] = EditSettings.model_validate(value).model_dump_json()
             elif key in {"selected", "face_tracking_enabled"}:
                 encoded[key] = int(value)
             else:
@@ -368,6 +455,9 @@ class Database:
         subtitle_margin_v: int = 420,
         subtitle_font_family: str = "Arial",
         balanced_vertical_offset: int = 0,
+        edit_settings: EditSettings | None = None,
+        is_preview: bool = False,
+        youtube: YoutubePackage | None = None,
     ) -> None:
         now = utc_now()
         with self.connect() as connection:
@@ -376,8 +466,8 @@ class Database:
                 INSERT INTO exports (
                     id, job_id, clip_id, status, progress, llm_seo_enabled,
                     playback_rate, subtitle_margin_v, subtitle_font_family,
-                    balanced_vertical_offset, created_at, updated_at
-                ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?)
+                    balanced_vertical_offset, edit_settings_json, is_preview, youtube_json, created_at, updated_at
+                ) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     export_id,
@@ -388,6 +478,9 @@ class Database:
                     subtitle_margin_v,
                     subtitle_font_family,
                     balanced_vertical_offset,
+                    (edit_settings or EditSettings()).model_dump_json(),
+                    int(is_preview),
+                    (youtube or YoutubePackage()).model_dump_json(),
                     now,
                     now,
                 ),
@@ -426,6 +519,8 @@ class Database:
             **self._job_summary(job).model_dump(),
             clips=[self._clip(row) for row in clips],
             exports=[self._export(row) for row in exports],
+            analysis=AnalysisReport.model_validate_json(job["analysis_json"]) if job["analysis_json"] else None,
+            correction=CorrectionReport.model_validate_json(job["correction_json"]) if job["correction_json"] else None,
         )
 
     def get_job_record(self, job_id: str) -> sqlite3.Row | None:
@@ -452,6 +547,8 @@ class Database:
         return JobSummary(
             id=row["id"],
             filename=row["filename"],
+            source_type=row["source_type"],
+            source_url=row["source_url"],
             status=row["status"],
             progress=row["progress"],
             stage=row["stage"],
@@ -477,6 +574,8 @@ class Database:
             content_score=row["content_score"],
             integrity_score=row["integrity_score"],
             selection_method=row["selection_method"],
+            topic_id=row["topic_id"],
+            youtube=YoutubePackage.model_validate_json(row["youtube_json"]),
             reasons=json.loads(row["reasons_json"]),
             subtitles=[SubtitleCue.model_validate(cue) for cue in json.loads(row["subtitles_json"])],
             cut_ranges=[
@@ -494,6 +593,7 @@ class Database:
             framing_mode=row["framing_mode"],
             face_tracking_enabled=bool(row["face_tracking_enabled"]),
             selected=bool(row["selected"]),
+            edit_settings=EditSettings.model_validate_json(row["edit_settings_json"]),
         )
 
     @staticmethod
@@ -511,8 +611,12 @@ class Database:
             subtitle_margin_v=int(row["subtitle_margin_v"]),
             subtitle_font_family=str(row["subtitle_font_family"]),
             balanced_vertical_offset=int(row["balanced_vertical_offset"]),
+            edit_settings=EditSettings.model_validate_json(row["edit_settings_json"]),
             filename=path.name if path else None,
+            is_preview=bool(row["is_preview"]),
             metadata_filename=metadata_path.name if metadata_path and metadata_path.exists() else None,
+            thumbnail_filename="thumbnail.jpg" if path and (path.parent / "thumbnail.jpg").is_file() else None,
+            package_filename="youtube-package.zip" if path and (path.parent / "youtube-package.zip").is_file() else None,
             error=row["error"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),

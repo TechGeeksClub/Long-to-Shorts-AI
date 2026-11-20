@@ -1,0 +1,25 @@
+.project-videos { padding: 21px 23px; margin-bottom: 24px; border: 1px solid #35382d; background: linear-gradient(110deg, #1b2012, #111113 65%); }
+.project-videos-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 13px; margin-bottom: 19px; }
+.project-videos-title > span { color: var(--acid); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.project-videos-title strong { color: #e2e6d7; font-size: 14px; overflow-wrap: anywhere; }
+.project-videos-controls { display: flex; align-items: flex-end; gap: 12px; }
+.project-videos-controls > label { display: grid; gap: 7px; flex: 1; min-width: 0; }
+.project-videos-controls label > span { color: #a1a894; font-size: 11px; }
+.project-videos-controls select { min-width: 0; width: 100%; border: 1px solid #4b5340; background: #0c0e0a; color: #f0f3e8; font: inherit; font-size: 13px; padding: 12px; text-overflow: ellipsis; }
+.project-videos-controls > button { display: flex; align-items: center; gap: 9px; border: 1px solid #7c8a46; background: #252d18; color: #d3e5a6; font-size: 12px; font-weight: 600; padding: 12px 17px; white-space: nowrap; cursor: pointer; }
+.project-videos-controls > button > span { font-size: 17px; line-height: 1; }
+.project-videos-controls > button:disabled, .project-videos-controls select:disabled { cursor: wait; opacity: .55; }
+.project-videos-controls select:focus-visible, .project-videos-controls button:focus-visible { outline: 2px solid var(--acid); outline-offset: 3px; }
+.project-videos-input { display: none; }
+.project-videos > p { font-size: 11px; color: #949e85; line-height: 1.7; margin: 13px 0 0; }
+.project-videos > progress { display: block; width: 100%; height: 4px; accent-color: var(--acid); margin-top: 13px; }
+.project-videos-add { display: grid; gap: 14px; margin-top: 17px; padding-top: 17px; border-top: 1px solid #4b5340; }
+.project-videos-copy { justify-self: start; padding: 0; border: 0; background: transparent; color: #c8d0bd; text-decoration: underline; font-size: 12px; cursor: pointer; }
+.project-videos-copy:disabled { opacity: .55; cursor: wait; }
+@media (max-width: 650px) {
+  .project-videos { padding: 17px; }
+  .project-videos-controls { flex-direction: column; align-items: stretch; }
+  .project-videos-controls > button { justify-content: center; }
+  .project-tools { flex-wrap: wrap; }
+  .project-tools > button { flex: 1 1 125px; }
+}

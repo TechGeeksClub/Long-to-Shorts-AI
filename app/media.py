@@ -10,6 +10,12 @@ from pathlib import Path
 
 import numpy as np
 
+from app.editing import (
+    apply_edge_effects, apply_edit_video_filter, apply_hook_transition, apply_video_effect,
+)
+from app.models import EditSettings
+from app.subscription_card import render_subscription_animation, subscription_filter_graph
+
 
 class MediaError(RuntimeError):
     pass
@@ -257,21 +263,43 @@ def render_video(
     playback_rate: float = 1.0,
     balanced_vertical_offset: int = 0,
     progress_callback: Callable[[float], None] | None = None,
+    edit_settings: EditSettings | None = None,
+    punch_in_times: list[float] | None = None,
+    output_width: int = 1080,
+    subtitle_margin_v: int = 420,
+    hook_boundary_seconds: float | None = None,
 ) -> None:
     duration = end - start
     normalized_playback_rate = normalize_playback_rate(playback_rate)
     output_duration = max(0.001, duration / normalized_playback_rate)
-    video_filter = apply_playback_rate_to_video_filter(
-        build_video_filter(
-            framing_mode=framing_mode,
-            face_tracking_enabled=face_tracking_enabled,
-            crop_width=crop_width,
-            crop_height=crop_height,
-            balanced_vertical_offset=balanced_vertical_offset,
-        ),
-        normalized_playback_rate,
+    video_filter = build_video_filter(
+        framing_mode=framing_mode,
+        face_tracking_enabled=face_tracking_enabled,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        balanced_vertical_offset=balanced_vertical_offset,
     )
+    settings = edit_settings or EditSettings()
+    video_filter = apply_video_effect(video_filter, settings)
+    video_filter = apply_edit_video_filter(
+        video_filter, settings, punch_in_times or [], duration,
+    )
+    video_filter = apply_playback_rate_to_video_filter(
+        video_filter, normalized_playback_rate,
+    )
+    # Give effects the final output clock, including after playback-rate changes.
+    video_filter += ",fps=30"
     audio_filter = build_audio_filter(normalized_playback_rate)
+    video_filter, audio_filter = apply_hook_transition(
+        video_filter, audio_filter, settings, output_duration,
+        hook_boundary_seconds / normalized_playback_rate if hook_boundary_seconds is not None else None,
+    )
+    video_filter, audio_filter = apply_edge_effects(
+        video_filter, audio_filter, settings, output_duration,
+    )
+    subscription = settings.subscription
+    if output_width != 1080 and not subscription.enabled:
+        video_filter += f",scale={output_width}:{round(output_width * 16 / 9 / 2) * 2}"
     command = [
         ffmpeg,
         "-hide_banner",
@@ -284,10 +312,22 @@ def render_video(
         f"{duration:.3f}",
         "-i",
         str(source),
-        "-vf",
-        video_filter,
-        "-map",
-        "0:v:0",
+    ]
+    if subscription.enabled:
+        animation = work_dir / "subscription-card.mov"
+        window_start, window_end = render_subscription_animation(
+            subscription, output_duration, animation, ffmpeg,
+        )
+        command.extend([
+            "-i", str(animation),
+            "-filter_complex", subscription_filter_graph(
+                video_filter, subscription, window_start, window_end,
+                subtitle_margin_v, output_width,
+            ), "-map", "[video]",
+        ])
+    else:
+        command.extend(["-vf", video_filter, "-map", "0:v:0"])
+    command.extend([
         "-map",
         "0:a:0",
         "-af",
@@ -312,7 +352,7 @@ def render_video(
         "pipe:1",
         "-nostats",
         str(output),
-    ]
+    ])
     process = subprocess.Popen(
         command,
         cwd=work_dir,
@@ -351,19 +391,26 @@ def render_cut_source(
     kept_ranges: list[tuple[float, float]],
     ffmpeg: str,
     progress_callback: Callable[[float], None] | None = None,
+    max_width: int | None = None,
 ) -> float:
     if not kept_ranges:
         raise MediaError("Kesitlerden sonra dışa aktarılacak video kalmadı.")
 
     filters: list[str] = []
     concat_inputs: list[str] = []
+    source_inputs: list[str] = []
+    resize = f",scale=w='min(iw,{max_width})':h=-2" if max_width else ""
     for index, (start, end) in enumerate(kept_ranges):
+        source_inputs.extend([
+            "-ss", f"{start:.6f}", "-t", f"{end - start:.6f}",
+            "-threads", "2", "-i", str(source),
+        ])
         filters.append(
-            f"[0:v]trim=start={start:.3f}:end={end:.3f},"
-            f"setpts=PTS-STARTPTS[v{index}]"
+            f"[{index}:v:0]trim=duration={end - start:.6f},"
+            f"setpts=PTS-STARTPTS{resize}[v{index}]"
         )
         filters.append(
-            f"[0:a]atrim=start={start:.3f}:end={end:.3f},"
+            f"[{index}:a:0]atrim=duration={end - start:.6f},"
             f"asetpts=PTS-STARTPTS[a{index}]"
         )
         concat_inputs.append(f"[v{index}][a{index}]")
@@ -378,8 +425,9 @@ def render_cut_source(
         "-loglevel",
         "error",
         "-y",
-        "-i",
-        str(source),
+        *source_inputs,
+        "-filter_complex_threads",
+        "1",
         "-filter_complex",
         filter_complex,
         "-map",

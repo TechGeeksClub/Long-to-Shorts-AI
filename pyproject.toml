@@ -9,8 +9,10 @@ dependencies = [
   "faster-whisper>=1.2,<2",
   "numpy>=2.0,<3",
   "opencv-python-headless>=4.11,<5",
+  "pillow>=11,<13",
   "python-multipart>=0.0.20,<1",
   "uvicorn[standard]>=0.34,<1",
+  "yt-dlp[default]>=2026.10.26",
 ]
 
 [dependency-groups]

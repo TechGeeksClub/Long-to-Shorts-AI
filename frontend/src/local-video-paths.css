@@ -1,0 +1,13 @@
+.local-video-paths { display: grid; gap: 10px; text-align: left; }
+.empty-state > .local-video-paths { max-width: 640px; padding: 23px; margin: 0 auto; border: 1px solid #414536; background: #181c12; }
+.local-video-paths label { font-size: 13px; font-weight: 650; }
+.local-video-paths p { margin: 0; color: #aab39c; font-size: 12px; line-height: 1.6; }
+.local-video-paths kbd { padding: 1px 5px; border: 1px solid #525a42; border-radius: 3px; color: #dbe5c9; white-space: nowrap; }
+.local-video-paths textarea { box-sizing: border-box; min-width: 0; width: 100%; padding: 12px; resize: vertical; border: 1px solid #525a42; background: #10120d; color: #f0f3e8; font: 13px/1.6 ui-monospace, monospace; }
+.local-video-paths textarea::placeholder { color: #8a9380; }
+.local-video-paths textarea:focus-visible { outline: 2px solid var(--acid); outline-offset: 2px; }
+.local-video-paths-header { display: flex; flex-wrap: wrap; align-items: center; gap: 13px; margin-bottom: 9px; }
+.local-video-paths-header p { flex: 1 1 235px; }
+.local-video-paths-header .primary-button { font-size: 12px; }
+.local-video-paths-footer { display: flex; justify-content: flex-end; }
+.local-video-paths .local-video-paths-error { color: #ffbdad; }

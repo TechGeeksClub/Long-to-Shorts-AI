@@ -104,6 +104,7 @@ def test_export_syncs_edited_subtitles_from_transcript(
             progress_callback(1.0)
 
     monkeypatch.setattr("app.processor.render_video", fake_render_video)
+    monkeypatch.setattr("app.youtube.render_thumbnail", lambda *args, **kwargs: None)
 
     processor.export("export")
 
@@ -231,6 +232,7 @@ def test_export_composes_inserted_range_at_requested_timeline_position(
 
     monkeypatch.setattr("app.processor.render_cut_source", fake_render_cut_source)
     monkeypatch.setattr("app.processor.render_video", fake_render_video)
+    monkeypatch.setattr("app.youtube.render_thumbnail", lambda *args, **kwargs: None)
 
     processor.export("export")
 

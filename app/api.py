@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import mimetypes
+import json
 import re
 import shutil
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse
 
 from app.config import Settings
+from app.codex_runner import CodexError, codex_status
 from app.database import Database
+from app.job_workspace import job_workspace, remove_job_workspace
+from app.local_requests import require_local_request
+from app.local_video_picker import PickerError, choose_video_paths
+from app.editing import hook_suggestions, validate_edit_source
 from app.models import (
     ClipCandidate,
     ClipUpdate,
@@ -23,8 +30,25 @@ from app.models import (
     InsertRange,
     ManualClipCreate,
     SubtitleCue,
+    SubscriptionSuggestRequest,
+    SubscriptionSuggestions,
+    SubscriptionSettings,
+    YoutubePackage,
+    YoutubeUpdate,
+    YoutubeSourceRequest,
+    YoutubeChannelBrowseResponse,
+    YoutubeChannelBrowseRequest,
 )
 from app.queue import WorkQueue
+from app.uploads import SafeUploadRoute, UploadPreflightRequest, validate_upload_space
+from app.subscriptions import generate_subscription_suggestions
+from app.subscription_card import AVATAR_PATH, render_card_preview
+from app.transcript_correction import correct_saved_cues, transcript_fingerprint
+from app.youtube import package_revision, render_thumbnail
+from app.youtube_import import (
+    YoutubeImportError, list_youtube_channel_videos,
+    normalize_youtube_channel_url, normalize_youtube_url,
+)
 from app.subtitles import (
     apply_cut_ranges_to_subtitles,
     build_speech_gap_cut_ranges,
@@ -174,16 +198,99 @@ def validate_insert_ranges(
 
 
 def create_router(database: Database, work_queue: WorkQueue, settings: Settings) -> APIRouter:
-    router = APIRouter(prefix="/api")
+    router = APIRouter(prefix="/api", route_class=SafeUploadRoute)
+
+    @router.post("/uploads/check")
+    def check_upload(payload: UploadPreflightRequest) -> dict[str, bool]:
+        validate_upload_space(settings, payload.size_bytes + payload.file_count * 1024)
+        return {"ok": True}
+
+    @router.post("/videos/pick-local")
+    def pick_local_videos(request: Request) -> dict[str, list[str]]:
+        require_local_request(request)
+        try:
+            return {"paths": choose_video_paths()}
+        except PickerError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     @router.get("/health")
     def health() -> dict[str, object]:
         missing = settings.validate_binaries()
         return {"ok": not missing, "missing": missing}
 
+    @router.get("/analysis/status")
+    def analysis_status() -> dict[str, Any]:
+        return codex_status(settings)
+
+    @router.get("/branding/subscription-avatar")
+    def subscription_avatar() -> FileResponse:
+        if not AVATAR_PATH.is_file():
+            raise HTTPException(status_code=404, detail="Kanal fotoğrafı bulunamadı.")
+        return FileResponse(AVATAR_PATH, media_type="image/jpeg")
+
+    @router.get("/branding/subscription-preview")
+    def subscription_preview(
+        channel_name: str = Query(default="Oban Otağı", max_length=50),
+        text: str = Query(default="", max_length=90),
+        show_tagline: bool = False, use_photo: bool = True, click_effect: bool = True,
+        duration: float = Query(default=4.2, ge=1, le=5, allow_inf_nan=False),
+        animation: str = Query(default="slide", pattern="^(fade|slide)$"),
+        position: str = Query(default="above_subtitles", pattern="^(above_subtitles|top)$"),
+        animated: bool = True,
+    ) -> Response:
+        card = SubscriptionSettings(
+            enabled=True, channel_name=channel_name.strip() or "Oban Otağı", text=text,
+            show_tagline=show_tagline, use_photo=use_photo, click_effect=click_effect,
+            duration=duration, animation=animation, position=position,
+        )
+        return Response(render_card_preview(card, animated), media_type="image/webp",
+            headers={"Cache-Control": "no-store"})
+
     @router.get("/jobs", response_model=list[JobSummary])
     def list_jobs() -> list[JobSummary]:
         return database.list_jobs()
+
+    @router.post("/youtube/channel/videos", response_model=YoutubeChannelBrowseResponse)
+    def browse_youtube_channel(payload: YoutubeChannelBrowseRequest) -> dict[str, Any]:
+        try:
+            url = normalize_youtube_channel_url(payload.url)
+        except YoutubeImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            result = asdict(list_youtube_channel_videos(url, limit=30, offset=payload.offset))
+            result["next_offset"] = payload.offset + 30 if result["has_more"] and payload.offset + 30 <= 10000 else None
+            return result
+        except YoutubeImportError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @router.post("/jobs/youtube", response_model=JobDetail, status_code=status.HTTP_202_ACCEPTED)
+    def create_youtube_job(payload: YoutubeSourceRequest) -> JobDetail:
+        try:
+            url = normalize_youtube_url(payload.url)
+        except YoutubeImportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if shutil.disk_usage(settings.data_dir).free < settings.minimum_free_bytes:
+            raise HTTPException(
+                status_code=507,
+                detail=f"YouTube videosu için en az {format_bytes(settings.minimum_free_bytes)} boş disk alanı gerekiyor.",
+            )
+        job_id = str(uuid.uuid4())
+        job_dir = settings.data_dir / "jobs" / job_id
+        try:
+            job_dir.mkdir(parents=True)
+            database.create_job(
+                job_id, f"YouTube · {url.rsplit('=', 1)[-1]}", job_dir / "youtube-source.mp4",
+                source_type="youtube", source_url=url,
+            )
+            database.update_job(job_id, stage="YouTube içe aktarma sırada")
+            work_queue.enqueue_youtube_import(job_id)
+        except (OSError, RuntimeError) as exc:
+            database.delete_job(job_id)
+            shutil.rmtree(job_dir, ignore_errors=True)
+            raise HTTPException(status_code=503, detail="YouTube içe aktarma başlatılamadı. Yeniden deneyebilirsin.") from exc
+        job = database.get_job(job_id)
+        assert job is not None
+        return job
 
     @router.post("/jobs", response_model=JobDetail, status_code=status.HTTP_202_ACCEPTED)
     async def create_job(request: Request, video: UploadFile = File(...)) -> JobDetail:
@@ -264,32 +371,89 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
         record = database.get_job_record(job_id)
         if record is None:
             raise HTTPException(status_code=404, detail="İş bulunamadı.")
-        if record["status"] in {"queued", "analyzing", "exporting"}:
+        if record["status"] in {"queued", "importing", "analyzing", "exporting"}:
             raise HTTPException(status_code=409, detail="İşlem devam ederken yeniden analiz yapılamaz.")
-        if not Path(record["source_path"]).exists():
-            raise HTTPException(status_code=404, detail="Kaynak video bulunamadı.")
+        needs_import = not Path(record["source_path"]).is_file()
+        if needs_import and (record["source_type"] != "youtube" or not record["source_url"]):
+            raise HTTPException(status_code=404, detail="Kaynak video bulunamadı. Dosyanın kayıtlı konumunda olduğunu kontrol et.")
         database.update_job(
             job_id,
             status="queued",
             progress=0.0,
-            stage="Konu analizi sırada",
+            stage="YouTube içe aktarma sırada" if needs_import else "Konu analizi sırada",
             error=None,
         )
-        work_queue.enqueue_analysis(job_id)
+        try:
+            if needs_import:
+                work_queue.enqueue_youtube_import(job_id)
+            else:
+                work_queue.enqueue_analysis(job_id)
+        except RuntimeError as exc:
+            database.update_job(job_id, status="failed", stage="İşlem başlatılamadı", error=str(exc))
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         job = database.get_job(job_id)
         assert job is not None
         return job
 
     @router.get("/jobs/{job_id}/source")
-    def get_source(job_id: str) -> FileResponse:
+    def get_source(job_id: str, request: Request) -> FileResponse:
         record = database.get_job_record(job_id)
         if record is None:
             raise HTTPException(status_code=404, detail="İş bulunamadı.")
         path = Path(record["source_path"])
-        if not path.exists():
-            raise HTTPException(status_code=404, detail="Kaynak video bulunamadı.")
+        linked = not path.is_relative_to(job_workspace(settings, job_id))
+        if linked:
+            require_local_request(request)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Kaynak video bulunamadı. Dosyanın kayıtlı konumunda olduğunu kontrol et.")
         media_type, _ = mimetypes.guess_type(path.name)
-        return FileResponse(path, media_type=media_type or "video/mp4", filename=None)
+        headers = {"Cross-Origin-Resource-Policy": "same-origin"} if linked else None
+        return FileResponse(path, media_type=media_type or "video/mp4", headers=headers)
+
+    @router.post("/jobs/{job_id}/transcript/correct", response_model=JobDetail, status_code=202)
+    def correct_job_subtitles(job_id: str) -> JobDetail:
+        job = database.get_job_record(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Video bulunamadı.")
+        if job["status"] in {"queued", "importing", "analyzing", "exporting"}:
+            raise HTTPException(status_code=409, detail="Önce devam eden işlemin tamamlanmasını bekle.")
+        if not job["transcript_path"] or not Path(job["transcript_path"]).is_file():
+            raise HTTPException(status_code=422, detail="Önce konuşma metni oluşturulmalı.")
+        database.update_job(job_id, status="queued", stage="Altyazı düzeltme sırada", progress=0, error=None)
+        work_queue.enqueue_correction(job_id)
+        return database.get_job(job_id)
+
+    @router.post("/jobs/{job_id}/transcript/corrections/{word_id}/revert", response_model=JobDetail)
+    def revert_correction(job_id: str, word_id: int) -> JobDetail:
+        job = database.get_job(job_id)
+        record = database.get_job_record(job_id)
+        if job is None or job.correction is None:
+            raise HTTPException(status_code=404, detail="Düzeltme bulunamadı.")
+        if job.status in {"queued", "importing", "analyzing", "exporting"}:
+            raise HTTPException(status_code=409, detail="Devam eden işlemin tamamlanmasını bekle.")
+        correction = next((item for item in job.correction.corrections if item.word_id == word_id), None)
+        if correction is None:
+            raise HTTPException(status_code=404, detail="Düzeltme bulunamadı.")
+        path = Path(record["transcript_path"])
+        transcript = json.loads(path.read_text(encoding="utf-8"))
+        word = next((w for segment in transcript["segments"] for w in segment["words"] if w.get("id") == word_id), None)
+        if word is None or word["text"] != correction.replacement:
+            raise HTTPException(status_code=409, detail="Bu kelime sonradan değiştirilmiş; otomatik geri alınmadı.")
+        word["text"] = correction.original
+        for segment in transcript["segments"]:
+            segment["text"] = " ".join(w["text"] for w in segment["words"])
+        temporary = path.with_suffix(".reverting.json")
+        temporary.write_text(json.dumps(transcript, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+        reverse = correction.model_copy(update={"original": correction.replacement, "replacement": correction.original})
+        for clip in job.clips:
+            database.update_clip(clip.id, subtitles=correct_saved_cues(clip.subtitles, [reverse], clip.start, clip.cut_ranges))
+        report = job.correction.model_copy(update={
+            "corrections": [item for item in job.correction.corrections if item.word_id != word_id],
+            "fingerprint": transcript_fingerprint(transcript["segments"]),
+        })
+        database.update_job(job_id, correction_json=report.model_dump_json())
+        return database.get_job(job_id)
 
     @router.post(
         "/jobs/{job_id}/clips",
@@ -301,7 +465,7 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
         job = database.get_job(job_id)
         if job_record is None or job is None:
             raise HTTPException(status_code=404, detail="İş bulunamadı.")
-        if job_record["status"] in {"queued", "analyzing"}:
+        if job_record["status"] in {"queued", "importing", "analyzing"}:
             raise HTTPException(
                 status_code=409,
                 detail="Analiz tamamlanmadan manuel klip oluşturulamaz.",
@@ -336,21 +500,92 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
             )
 
         rank = max((clip.rank for clip in job.clips), default=0) + 1
+        topic = next((topic for topic in job.analysis.topics if topic.id == payload.topic_id), None) if job.analysis else None
+        if payload.topic_id and topic is None:
+            raise HTTPException(status_code=404, detail="Konu bulunamadı.")
         clip = ClipCandidate(
             id=str(uuid.uuid4()),
             job_id=job_id,
             rank=rank,
-            title=manual_clip_title(subtitles, rank),
+            title=topic.title if topic else manual_clip_title(subtitles, rank),
             start=round(payload.start, 3),
             end=round(end, 3),
             score=0,
             reasons=["Manuel aralık"],
             subtitles=subtitles,
             selection_method="manual",
+            topic_id=payload.topic_id,
             selected=True,
         )
         database.create_clip(clip)
         return clip
+
+    def youtube_clip(job_id: str, clip_id: str):
+        job, clip = database.get_job_record(job_id), database.get_clip(clip_id)
+        if job is None or clip is None or clip.job_id != job_id:
+            raise HTTPException(status_code=404, detail="Klip bulunamadı.")
+        return job, clip
+
+    @router.patch("/jobs/{job_id}/clips/{clip_id}/youtube", response_model=ClipCandidate)
+    def save_youtube(job_id: str, clip_id: str, payload: YoutubeUpdate) -> ClipCandidate:
+        job, clip = youtube_clip(job_id, clip_id)
+        if clip.youtube.status in {"queued", "generating"}:
+            raise HTTPException(status_code=409, detail="Öneriler hazırlanırken ayarları değiştiremezsin.")
+        if payload.brief.frame_time is not None and payload.brief.frame_time >= float(job["duration"] or 0):
+            raise HTTPException(status_code=422, detail="Kapak karesi kaynak videonun içinde olmalı.")
+        package = YoutubePackage.model_validate({**clip.youtube.model_dump(), **payload.model_dump()})
+        revision = package_revision(package)
+        destination = job_workspace(settings, job_id) / "youtube" / clip.id / "thumbnail.jpg"
+        if revision != clip.youtube.revision or not destination.is_file():
+            try:
+                render_thumbnail(Path(job["source_path"]), destination, clip, package, settings)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail="Kapak karesi oluşturulamadı. Zamanı ve kaynak videoyu kontrol et.") from exc
+        package.revision = revision
+        database.update_clip(clip_id, youtube=package)
+        return database.get_clip(clip_id)
+
+    @router.post("/jobs/{job_id}/clips/{clip_id}/youtube/generate", response_model=ClipCandidate, status_code=202)
+    def generate_youtube(job_id: str, clip_id: str) -> ClipCandidate:
+        job, clip = youtube_clip(job_id, clip_id)
+        if job["status"] in {"queued", "importing", "analyzing", "exporting"} or clip.youtube.status in {"queued", "generating"}:
+            raise HTTPException(status_code=409, detail="Devam eden işlemin tamamlanmasını bekle.")
+        database.update_clip(clip_id, youtube=clip.youtube.model_copy(update={"status": "queued", "error": None}))
+        work_queue.enqueue_youtube(clip_id)
+        return database.get_clip(clip_id)
+
+    @router.get("/jobs/{job_id}/clips/{clip_id}/youtube/thumbnail")
+    def youtube_thumbnail(job_id: str, clip_id: str) -> FileResponse:
+        job, clip = youtube_clip(job_id, clip_id)
+        path = job_workspace(settings, job_id) / "youtube" / clip.id / "thumbnail.jpg"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Önce YouTube ayarlarını kaydet.")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
+
+    @router.get("/jobs/{job_id}/clips/{clip_id}/hooks")
+    def suggest_hooks(job_id: str, clip_id: str) -> list[dict[str, str]]:
+        clip = database.get_clip(clip_id)
+        if clip is None or clip.job_id != job_id:
+            raise HTTPException(status_code=404, detail="Klip bulunamadı.")
+        return hook_suggestions(clip.subtitles)
+
+    @router.post("/jobs/{job_id}/clips/{clip_id}/subscription-suggestions",
+                 response_model=SubscriptionSuggestions)
+    def suggest_subscription(
+        job_id: str, clip_id: str, payload: SubscriptionSuggestRequest,
+    ) -> SubscriptionSuggestions:
+        job, clip = youtube_clip(job_id, clip_id)
+        edit = payload.edit_settings or clip.edit_settings
+        try:
+            validate_edit_source(edit, float(job["duration"] or 0))
+            return generate_subscription_suggestions(
+                clip, edit, payload.playback_rate, transcript_segments(job) or [],
+                settings, job_workspace(settings, job_id),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except CodexError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @router.patch("/jobs/{job_id}/clips/{clip_id}", response_model=ClipCandidate)
     def update_clip(job_id: str, clip_id: str, payload: ClipUpdate) -> ClipCandidate:
@@ -375,6 +610,11 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
                 status_code=422,
                 detail="Klip süresi en az 1 saniye olmalıdır.",
             )
+
+        try:
+            validate_edit_source(payload.edit_settings or clip.edit_settings, source_duration)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         requested_cut_ranges = payload.cut_ranges if payload.cut_ranges is not None else clip.cut_ranges
         if payload.auto_cut_silence:
@@ -434,6 +674,8 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
         )
         if payload.selected is not None:
             values["selected"] = payload.selected
+        if payload.edit_settings is not None:
+            values["edit_settings"] = payload.edit_settings
         if payload.framing_mode is not None:
             values["framing_mode"] = payload.framing_mode
         if payload.face_tracking_enabled is not None or next_framing_mode != "fill":
@@ -456,6 +698,11 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
         unique_ids = list(dict.fromkeys(payload.clip_ids))
         if any(clip_id not in clip_map for clip_id in unique_ids):
             raise HTTPException(status_code=404, detail="Kliplerden biri bulunamadı.")
+        try:
+            for clip_id in unique_ids:
+                validate_edit_source(clip_map[clip_id].edit_settings, float(job.duration or 0))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         export_ids: list[str] = []
         for clip_id in unique_ids:
@@ -469,6 +716,9 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
                 subtitle_margin_v=payload.subtitle_margin_v,
                 subtitle_font_family=payload.subtitle_font_family,
                 balanced_vertical_offset=payload.balanced_vertical_offset,
+                edit_settings=clip_map[clip_id].edit_settings,
+                is_preview=payload.is_preview,
+                youtube=clip_map[clip_id].youtube,
             )
             export_ids.append(export_id)
             work_queue.enqueue_export(export_id)
@@ -501,15 +751,42 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
             raise HTTPException(status_code=404, detail="SEO dosyası bulunamadı.")
         return FileResponse(path, media_type="text/markdown", filename=path.name)
 
+    @router.get("/exports/{export_id}/package")
+    def download_package(export_id: str) -> FileResponse:
+        record = database.get_export_record(export_id)
+        if record is None or record["status"] != "completed" or not record["path"]:
+            raise HTTPException(status_code=404, detail="Paket henüz hazır değil.")
+        path = Path(record["path"]).parent / "youtube-package.zip"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Bu eski çıktıda paket yok. Yeniden dışa aktar.")
+        return FileResponse(path, media_type="application/zip", filename=f"{Path(record['path']).stem}-youtube.zip")
+
+    @router.get("/exports/{export_id}/thumbnail")
+    def download_thumbnail(export_id: str) -> FileResponse:
+        record = database.get_export_record(export_id)
+        if record is None or record["status"] != "completed" or not record["path"]:
+            raise HTTPException(status_code=404, detail="Kapak henüz hazır değil.")
+        path = Path(record["path"]).parent / "thumbnail.jpg"
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="Kapak bulunamadı.")
+        return FileResponse(path, media_type="image/jpeg", filename="thumbnail.jpg")
+
     @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-    def delete_job(job_id: str) -> None:
+    def delete_job(job_id: str, request: Request) -> None:
         record = database.get_job_record(job_id)
         if record is None:
             raise HTTPException(status_code=404, detail="İş bulunamadı.")
-        if record["status"] in {"queued", "analyzing", "exporting"}:
+        if record["status"] in {"queued", "importing", "analyzing", "exporting"}:
             raise HTTPException(status_code=409, detail="Devam eden bir iş silinemez.")
-        job_dir = Path(record["source_path"]).parent
+        if request.app.state.speech_cleanup.has_active_work(job_id):
+            raise HTTPException(status_code=409, detail="Konuşma temizleme işlemi devam eden proje silinemez.")
+        if request.app.state.projects.is_video_busy(job_id):
+            raise HTTPException(status_code=409, detail="Birleştirme işleminde kullanılan video silinemez.")
+        try:
+            job_workspace(settings, job_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         database.delete_job(job_id)
-        shutil.rmtree(job_dir, ignore_errors=True)
+        remove_job_workspace(settings, job_id)
 
     return router

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -14,6 +14,11 @@ HUGGINGFACE_CACHE_ENV_VARS = (
     "HUGGINGFACE_HUB_CACHE",
     "TRANSFORMERS_CACHE",
 )
+
+
+def _speech_export_dir_from_env() -> Path | None:
+    value = os.getenv("LTS_SPEECH_EXPORT_DIR")
+    return Path(value).expanduser() if value else None
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,14 @@ class Settings:
     semantic_clip_model: str = os.getenv("LTS_SEMANTIC_CLIP_MODEL", "qwen2.5:7b")
     semantic_candidate_count: int = int(os.getenv("LTS_SEMANTIC_CANDIDATES", "60"))
     ollama_timeout_seconds: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+    codex_path: str = os.getenv("LTS_CODEX_PATH", "")
+    codex_model: str = os.getenv("LTS_CODEX_MODEL", "")
+    codex_timeout_seconds: float = float(os.getenv("LTS_CODEX_TIMEOUT_SECONDS", "600"))
+    codex_transcript_chunk_chars: int = int(os.getenv("LTS_CODEX_TRANSCRIPT_CHUNK_CHARS", "100000"))
+    agent_min_clip_seconds: float = float(os.getenv("LTS_AGENT_MIN_CLIP_SECONDS", "8"))
+    agent_max_clip_seconds: float = float(os.getenv("LTS_AGENT_MAX_CLIP_SECONDS", "180"))
+    transcript_correction_enabled: bool = os.getenv("LTS_TRANSCRIPT_CORRECTION", "1") != "0"
+    speech_export_dir: Path | None = field(default_factory=_speech_export_dir_from_env)
 
     @property
     def database_path(self) -> Path:

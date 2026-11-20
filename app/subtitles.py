@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
-from app.models import CutRange, SubtitleCue, SubtitleWord
+from app.models import CutRange, EditSettings, SubtitleCue, SubtitleWord
 from app.timeline import TimelineSegment
 
 DISPLAY_BRIDGE_SECONDS = 0.75
@@ -149,13 +149,15 @@ def best_line_break_index(words: list[SubtitleWord]) -> int | None:
     return best[1] if best else None
 
 
-def ass_caption_text(words: list[SubtitleWord], active_index: int) -> str:
+def ass_caption_text(
+    words: list[SubtitleWord], active_index: int, accent: str = "&H0000FFFF&"
+) -> str:
     break_index = best_line_break_index(words)
     fragments: list[str] = []
     for index, word in enumerate(words):
         if break_index is not None and index == break_index:
             fragments.append(r"\N")
-        color = "&H0000FFFF&" if index == active_index else "&H00FFFFFF&"
+        color = accent if index == active_index else "&H00FFFFFF&"
         fragments.append(rf"{{\c{color}}}{escape_ass_text(word.text)}")
     return " ".join(fragments).replace(r" \N ", r"\N")
 
@@ -278,6 +280,8 @@ def compose_subtitles_for_timeline(
     transcript_segments: list[dict[str, Any]],
     timeline: list[TimelineSegment],
     output_start: float,
+    base_start: float | None = None,
+    base_end: float | None = None,
 ) -> list[SubtitleCue]:
     composed: list[SubtitleCue] = []
     output_cursor = output_start
@@ -291,6 +295,21 @@ def compose_subtitles_for_timeline(
                 segment.source_end,
             )
         )
+        if segment.kind == "hook" and base_start is not None and base_end is not None:
+            # Preserve edited words inside the main clip, and use the transcript
+            # for any part of a hook selected elsewhere in the source video.
+            source_cues = [
+                *_slice_subtitles_to_range(
+                    source_cues, segment.source_start, min(segment.source_end, base_start),
+                ),
+                *_slice_subtitles_to_range(
+                    base_cues, max(segment.source_start, base_start),
+                    min(segment.source_end, base_end),
+                ),
+                *_slice_subtitles_to_range(
+                    source_cues, max(segment.source_start, base_end), segment.source_end,
+                ),
+            ]
         sliced = _slice_subtitles_to_range(
             source_cues,
             segment.source_start,
@@ -326,6 +345,8 @@ def _slice_subtitles_to_range(
     source_start: float,
     source_end: float,
 ) -> list[SubtitleCue]:
+    if source_end <= source_start:
+        return []
     sliced: list[SubtitleCue] = []
     for cue in cues:
         if cue.end <= source_start or cue.start >= source_end:
@@ -667,9 +688,20 @@ def write_ass(
     destination: Path,
     subtitle_margin_v: int = DEFAULT_ASS_SUBTITLE_MARGIN_V,
     subtitle_font_family: str = DEFAULT_ASS_SUBTITLE_FONT_FAMILY,
+    edit_settings: EditSettings | None = None,
+    playback_rate: float = 1.0,
+    clip_duration: float | None = None,
 ) -> None:
     margin_v = normalize_subtitle_margin_v(subtitle_margin_v)
     font_family = normalize_subtitle_font_family(subtitle_font_family)
+    settings = edit_settings or EditSettings()
+    styled = settings.style != "off"
+    font_size, accent = {
+        "off": (76, "&H0000FFFF&"),
+        "clean": (74, "&H0059DEFF&"),
+        "dynamic": (80, "&H0043FFD9&"),
+        "cinematic": (68, "&H00C7DEE8&"),
+    }[settings.style]
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -679,13 +711,41 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Shorts,{font_family},76,&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,0,0,1,7,2,2,70,70,{margin_v},1
+Style: Shorts,{font_family},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,0,0,1,7,2,2,70,70,{margin_v},1
+Style: Hook,{font_family},64,{accent},&H00FFFFFF,&H00121212,&H00121212,-1,0,0,0,100,100,0,0,3,14,0,8,100,100,220,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events: list[str] = []
     sorted_cues = sorted(cues, key=lambda value: value.start)
+    if styled:
+        max_words, max_units = {
+            "clean": (4, 26), "dynamic": (3, 22), "cinematic": (5, 30),
+        }[settings.style]
+        sorted_cues = [
+            group
+            for cue in sorted_cues
+            for group in group_subtitle_words(cue_words(cue), max_words, max_units)
+        ]
+        if settings.hook_text.strip():
+            lines: list[str] = []
+            line = ""
+            for word in settings.hook_text.split():
+                candidate = f"{line} {word}".strip()
+                if line and text_units(candidate) > 25:
+                    lines.append(escape_ass_text(line))
+                    line = word
+                else:
+                    line = candidate
+            if line:
+                lines.append(escape_ass_text(line))
+            hook_text = r"\N".join(lines)
+            hook_end = ass_time(settings.hook_duration * playback_rate)
+            events.append(
+                f"Dialogue: 1,0:00:00.00,{hook_end},Hook,,0,0,0,,"
+                rf"{{\fad(100,160)}}{hook_text}"
+            )
     for cue_index, cue in enumerate(sorted_cues):
         words = cue_words(cue)
         if not words:
@@ -714,9 +774,12 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
             start = ass_time(cursor - clip_start)
             end = ass_time(next_start - clip_start)
+            animation = ""
+            if settings.style == "dynamic" and active_index == 0:
+                animation = r"{\fscx96\fscy96\t(0,100,\fscx100\fscy100)}"
             events.append(
                 f"Dialogue: 0,{start},{end},Shorts,,0,0,0,,"
-                f"{ass_caption_text(words, active_index)}"
+                f"{animation}{ass_caption_text(words, active_index, accent)}"
             )
             cursor = next_start
     destination.write_text(header + "\n".join(events) + "\n", encoding="utf-8-sig")
