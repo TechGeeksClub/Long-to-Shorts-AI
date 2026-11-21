@@ -344,7 +344,7 @@ def test_individual_stream_reported_by_downloader_is_not_a_complete_source(monke
     assert not list(job_dir.iterdir())
 
 
-def test_private_channel_fetch_errors_are_actionable(monkeypatch) -> None:
+def test_channel_bot_challenge_points_to_file_upload(monkeypatch) -> None:
     def unavailable(_):
         raise RuntimeError("Sign in to confirm you are not a bot")
 
@@ -416,6 +416,9 @@ def test_corrupt_download_retries_and_publishes_only_a_verified_source(
 @pytest.mark.parametrize(("message", "attempts", "expected_error"), [
     ("HTTP Error 403: Forbidden", 2, "403"),
     ("connection timed out", 1, "İnternet"),
+    ("Sign in to confirm you’re not a bot.", 1, "otomatik erişim"),
+    ("Private video. Sign in", 1, "oturum açılmasını"),
+    ("HTTP Error 429: Too Many Requests", 1, "çok fazla istek"),
 ])
 def test_download_error_fallback_is_bounded(
     monkeypatch, download_environment, message, attempts, expected_error,

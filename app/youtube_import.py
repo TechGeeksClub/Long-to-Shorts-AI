@@ -172,19 +172,26 @@ def _base_options() -> dict[str, Any]:
 
 def _public_error(exc: Exception) -> YoutubeImportError:
     message = str(exc).lower()
+    if "not a bot" in message:
+        return YoutubeImportError(
+            "YouTube otomatik erişim için doğrulama istedi. Bu uyarı herkese açık videolarda da çıkabilir. "
+            "Kendi videonuzu YouTube Studio’dan indirip dosya olarak yükleyebilirsiniz."
+        )
     if "403" in message or "forbidden" in message:
         return YoutubeImportError(
             "YouTube bu videonun indirilmesine erişim izni vermedi (403). "
             "Daha sonra tekrar deneyin veya kendi videonuzu YouTube Studio’dan indirip dosya olarak yükleyin."
         )
-    if any(word in message for word in ("private video", "members-only", "login required", "sign in", "not a bot", "age-restricted")):
+    if any(word in message for word in ("private video", "members-only", "login required", "sign in", "age-restricted")):
         return YoutubeImportError(
             "YouTube bu içerik için oturum açılmasını istiyor. Herkese açık bir video seçin "
             "veya YouTube Studio’dan indirdiğiniz dosyayı yükleyin."
         )
     if any(word in message for word in ("unavailable", "not available", "removed", "does not exist", "404")):
         return YoutubeImportError("YouTube içeriği bulunamadı veya şu anda erişilemiyor. Bağlantıyı kontrol edin.")
-    if any(word in message for word in ("timed out", "timeout", "connection", "network", "resolve", "429")):
+    if "429" in message or "too many requests" in message:
+        return YoutubeImportError("YouTube çok fazla istek aldı. Bir süre sonra tekrar deneyin.")
+    if any(word in message for word in ("timed out", "timeout", "connection", "network", "resolve")):
         return YoutubeImportError("YouTube bağlantısı kurulamadı. İnternet bağlantısını kontrol edip tekrar deneyin.")
     if any(word in message for word in ("javascript", "js runtime", "challenge", "requested format", "no video formats")):
         return YoutubeImportError(

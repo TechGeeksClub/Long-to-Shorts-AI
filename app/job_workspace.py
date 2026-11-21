@@ -16,6 +16,10 @@ def job_workspace(settings: Settings, job_id: str) -> Path:
     return workspace
 
 
+def speech_transcript_path(settings: Settings, job_id: str) -> Path:
+    return job_workspace(settings, job_id) / "speech-cleanup" / "transcript.json"
+
+
 def remove_job_workspace(settings: Settings, job_id: str) -> None:
     workspace = job_workspace(settings, job_id)
     shutil.rmtree(workspace, ignore_errors=True)

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator
+from uuid import uuid4
 
 from app.models import (
     AnalysisReport,
@@ -106,6 +107,14 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_clips_job ON clips(job_id);
                 CREATE INDEX IF NOT EXISTS idx_exports_job ON exports(job_id);
+
+                CREATE TABLE IF NOT EXISTS content_studio_history (
+                    id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    brief TEXT NOT NULL,
+                    has_reference INTEGER NOT NULL,
+                    options_json TEXT NOT NULL
+                );
                 """
             )
             clip_columns = {
@@ -218,6 +227,34 @@ class Database:
                 )
             if "youtube_json" not in export_columns:
                 connection.execute("ALTER TABLE exports ADD COLUMN youtube_json TEXT NOT NULL DEFAULT '{}'")
+
+    def save_content_studio_options(self, brief: str, has_reference: bool, options_json: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO content_studio_history (id, created_at, brief, has_reference, options_json)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (str(uuid4()), utc_now(), brief, has_reference, options_json),
+            )
+
+    def list_content_studio_history(self) -> list[sqlite3.Row]:
+        with self.connect() as connection:
+            return connection.execute(
+                """
+                SELECT id, created_at, substr(brief, 1, 120) AS brief_preview,
+                    json_extract(options_json, '$.options[0].title') AS title,
+                    json_extract(options_json, '$.target_seconds') AS target_seconds
+                FROM content_studio_history ORDER BY created_at DESC, rowid DESC
+                """
+            ).fetchall()
+
+    def get_content_studio_options(self, entry_id: str) -> sqlite3.Row | None:
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT id, brief, has_reference, options_json FROM content_studio_history WHERE id = ?",
+                (entry_id,),
+            ).fetchone()
 
     def interrupt_active_jobs(self) -> None:
         now = utc_now()
@@ -517,6 +554,7 @@ class Database:
             ).fetchall()
         return JobDetail(
             **self._job_summary(job).model_dump(),
+            transcript_available=bool(job["transcript_path"] and Path(job["transcript_path"]).is_file()),
             clips=[self._clip(row) for row in clips],
             exports=[self._export(row) for row in exports],
             analysis=AnalysisReport.model_validate_json(job["analysis_json"]) if job["analysis_json"] else None,

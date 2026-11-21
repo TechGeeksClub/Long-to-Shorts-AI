@@ -263,6 +263,7 @@ class AnalysisReport(BaseModel):
 
 
 class JobDetail(JobSummary):
+    transcript_available: bool = False
     clips: list[ClipCandidate] = Field(default_factory=list)
     exports: list[Export] = Field(default_factory=list)
     analysis: AnalysisReport | None = None

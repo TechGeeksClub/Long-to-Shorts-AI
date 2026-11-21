@@ -1,13 +1,82 @@
 # Long to Shorts AI
 
-A web application that turns long videos into subtitled vertical clips, using
-Codex to understand the full conversation and select self-contained ideas.
+Long to Shorts AI is a local web app called Shorts Studio. Use it in your
+browser to turn long videos into subtitled vertical clips, find and mute spoken
+sections, cut or merge videos, and rehearse a transcript with a word-by-word
+teleprompter.
 
-The application transcribes speech locally with `faster-whisper`. The signed-in
-Codex CLI sends the transcript to OpenAI to map topics and suggest up to 10
-complete clips. Video/audio files and 1080x1920 MP4 rendering stay local.
-Clips usually target 30–60 seconds, with up to 180 seconds available to finish
-an explanation instead of cutting a sentence or answer in half.
+Speech recognition runs on your computer with `faster-whisper`. When you request
+topic analysis, the signed-in Codex CLI sends the transcript to OpenAI to map
+topics and suggest up to 10 self-contained clips. Most clips target 30–60 seconds
+and can run up to 180 seconds to finish an idea. The app renders 1080 × 1920 MP4s
+locally. **İçerik Stüdyosu** also uses Codex to generate Turkish scripts, editing
+plans, and YouTube metadata.
+
+## Quick Start
+
+### Requirements
+
+- Windows 10 or 11 on x64, or macOS 14 or newer on Apple Silicon or Intel
+- An internet connection for setup, first model downloads, and Codex features
+- Free disk space for work files and exports. When using **Kopyalayarak yükle**,
+  allow roughly twice the upload size plus 2 GB if the temporary and project
+  folders share a drive.
+
+### 1. Get the project
+
+Clone the repository in a terminal.
+
+```sh
+git clone https://github.com/TechGeeksClub/Long-to-Shorts-AI.git
+cd Long-to-Shorts-AI
+```
+
+You can also choose **Code > Download ZIP** on GitHub and extract it. Open a
+terminal in the extracted folder that contains `start.cmd` and `start.sh`.
+
+### 2. Start Shorts Studio
+
+**Windows**
+
+Double-click `start.cmd` in File Explorer or run this in PowerShell.
+
+```powershell
+.\start.cmd
+```
+
+The launcher uses compatible Node.js and FFmpeg installations if available.
+Otherwise it downloads portable copies into `.tools` inside the project.
+
+**macOS**
+
+```sh
+bash start.sh
+```
+
+The launcher uses Homebrew to install Node.js and FFmpeg if needed. Homebrew
+setup can ask for your Mac password and install the Xcode Command Line Tools.
+The availability of prebuilt packages depends on your macOS version and
+processor. [Homebrew installation requirements](https://docs.brew.sh/Installation)
+
+Both launchers prepare `uv` and a managed Python 3.12 environment, install
+dependencies from the lockfiles, and build the web interface. The first launch
+can take several minutes.
+
+The browser opens at [http://127.0.0.1:8000](http://127.0.0.1:8000) when the
+server is ready. Leave the terminal open while you use the app. Press `Ctrl+C`
+to stop it and use the same launch command to start it again. You can add
+`--port 8001` to choose another port and `--no-browser` to open the URL yourself.
+
+### Optional Codex sign-in
+
+Topic analysis, transcript proofreading, Codex-generated YouTube metadata, and
+**İçerik Stüdyosu** use the saved sign-in from your Codex CLI. Install the CLI if
+needed and run `codex login` in a terminal. If Shorts Studio cannot find Codex,
+set `LTS_CODEX_PATH` to the native CLI executable before launching the app.
+[Codex CLI setup](https://developers.openai.com/codex/cli)
+
+You can find and mute speech, cut and merge videos, and use **Canlı oku** with a
+saved transcript before signing in.
 
 ## Features
 
@@ -16,8 +85,10 @@ an explanation instead of cutting a sentence or answer in half.
 - Source-derived boundaries, specific titles, and editorial explanations
 - Reanalysis preserves manual clips, edits, hooks, effects, and exported files
 - Context-aware transcript proofreading with an inspectable correction log
+- Word-by-word teleprompter for saved transcripts and generated scripts
 - Create a manual clip directly from any topic, including topics without suggestions
 - Per-clip YouTube studio with selectable Codex titles/descriptions and designed frame thumbnails
+- İçerik Stüdyosu for choosing a video outline and generating a Turkish script, edit plan, and YouTube SEO package
 - Support for MP4, MOV, MKV, M4V, AVI, and WEBM files
 - Browse a YouTube channel and import a selected video as a new project
 - Editable subtitle text and timing
@@ -53,75 +124,6 @@ an explanation instead of cutting a sentence or answer in half.
 - Short caption groups, restrained camera accents, and in-app playback of exports
 - Modern subscription cards with channel identity, a red subscribe button, bell and fade/slide animations
 
-## Requirements
-
-- Windows 10 or Windows 11
-- Node.js 22 or later (also used by yt-dlp for YouTube imports)
-- Codex CLI or the Codex desktop app's bundled CLI, signed in with `codex login`
-- FFmpeg and FFprobe available in `PATH`
-- Free disk space for generated audio, transcripts and exports. When using
-  **Kopyalayarak yükle**, allow roughly twice the upload size plus 2 GB if the
-  temporary and project folders are on the same drive.
-- An internet connection for Codex analysis, initial setup, and first model downloads
-
-You do not need to install Python separately. The startup script automatically
-prepares `uv` and a managed Python 3.12 environment.
-
-> [!NOTE]
-> Transcription runs on the CPU. Processing long videos may take some time
-> depending on your processor and the length of the video.
-
-## Quick Start
-
-### 1. Download the repository
-
-Using Git:
-
-```powershell
-git clone https://github.com/TechGeeksClub/Long-to-Shorts-AI.git
-cd Long-to-Shorts-AI
-```
-
-Alternatively, select **Code > Download ZIP** on GitHub and extract the archive.
-
-### 2. Verify the requirements
-
-Open a new PowerShell window and make sure these commands work:
-
-```powershell
-node --version
-npm --version
-ffmpeg -version
-ffprobe -version
-```
-
-If you have just installed FFmpeg, close and reopen the terminal so Windows can
-detect the updated `PATH`.
-
-### 3. Start the application
-
-Run the following command from the project directory:
-
-```powershell
-.\start.ps1
-```
-
-On the first run, the script:
-
-1. Downloads the pinned `uv` version into the project.
-2. Creates a Python 3.12 environment and installs the Python dependencies.
-3. Installs the frontend dependencies and builds the web interface.
-4. Opens the application at `http://127.0.0.1:8000`.
-
-Press `Ctrl+C` in the PowerShell window to stop the application.
-
-If PowerShell prevents scripts from running, use the following command to bypass
-the execution policy for this run only:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start.ps1
-```
-
 ## Usage
 
 1. Select one or more local video files for a project, or use
@@ -143,12 +145,42 @@ Use **Codex ile konuları çıkar** to analyze an existing video. Its cached
 transcript is reused without running transcription or extracting audio again.
 New suggestions are added alongside existing clips; previous work is retained.
 
+Transcription runs on the CPU. The time it takes depends on your processor and
+the length of the video.
+
+### Live reading with Canlı oku
+
+For an extracted transcript, select your video and choose **Canlı oku** next to
+the transcript download in **LongToShorts** or **Konuşma Temizleme**. To create
+a transcript in **Konuşma Temizleme**, use **Konuşmaları bul**. For a generated
+script, choose **Canlı oku** in the **Konuşma metni** card in **İçerik Stüdyosu**.
+
+Press **Başlat** and read the highlighted word as it advances. For example,
+`ALİ topu at.` → `Ali TOPU at.` → `Ali topu AT.` The reader gives longer words
+more time and pauses at punctuation. Set **Okuma hızı** between 80 and 200
+words per minute, pause or resume at any time, and use the slider to jump to a
+word.
+
+### İçerik Stüdyosu
+
+1. Open **İçerik Stüdyosu** and describe the video you want to make. Include
+   your own experiences and footage you can shoot. Set a target length or
+   leave it on **Otomatik** to use the duration in your notes or a six-minute default.
+2. Optionally give a YouTube video link, upload an example video, or paste a
+   reference transcript. For video inputs, FFmpeg and Whisper extract and
+   transcribe the speech locally. Codex receives the brief and transcript text.
+3. Ask for options. Compare three outlines by their openings, what viewers take
+   away, what each approach requires, and how the scenes connect. Then select an outline.
+4. Generate the package. Codex plans the scenes, then writes the Turkish script
+   to fit the target length. Use each scene's spoken lines, visuals, cuts, audio,
+   on-screen text, and transitions with the YouTube title and description suggestions.
+
 ### Multiple videos and merging
 
-Use **Bilgisayardan seç** to link one or more videos from your computer when
-creating a project, or use **Projeye video ekle** to add more later. You can
-also paste one absolute file path per line. Linked videos are read from their
-original location. Keep the files in that location while using the project.
+On Windows, use **Bilgisayardan seç** to link one or more videos from your
+computer. On either platform, you can paste one absolute video path per line.
+Use **Projeye video ekle** to add more videos later. Linked videos are read from
+their original location. Keep the files in that location while using the project.
 Transcripts, work files, and exports go in the project data directory.
 **Kopyalayarak yükle** stores a separate project copy when you need one.
 
@@ -166,8 +198,9 @@ video and audio. For sources with different formats or dimensions, the app fits
 each video to the first video's frame without cropping and normalizes frame rate
 and audio. Sources without audio receive silence when this conversion is needed.
 
-Before exporting, choose **Kayıt konumu** with **Klasör seç**, or type the absolute
-path of an existing folder. Leave it blank to use the project's default storage.
+Before exporting, set **Kayıt konumu** by typing the absolute path of an existing
+folder or using **Klasör seç** on Windows. Leave it blank to use the project's
+default storage.
 The selected folder is remembered in this browser for that project. The app
 writes the completed MP4 directly to the chosen folder with a unique filename;
 it does not create a second video copy in the project folder.
@@ -246,7 +279,7 @@ setting `LTS_SPEECH_EXPORT_DIR` before starting the app:
 
 ```powershell
 $env:LTS_SPEECH_EXPORT_DIR = "E:\ShortsStudio-Exports"
-.\start.ps1
+.\start.cmd
 ```
 
 Outputs preserve the source frame dimensions and are listed in this workspace.
@@ -515,7 +548,7 @@ starting it:
 ```powershell
 $env:WHISPER_MODEL = "base"
 $env:LTS_CANDIDATE_COUNT = "6"
-.\start.ps1
+.\start.cmd
 ```
 
 | Variable | Default | Description |
@@ -540,8 +573,9 @@ $env:LTS_CANDIDATE_COUNT = "6"
 
 ## Development
 
-Complete the initial setup with `start.ps1` at least once, then start the
-development servers with:
+On Windows, complete the initial setup with `start.cmd` and ensure Node.js
+and FFmpeg are available in your development shell's `PATH`. Start the
+development servers with the following command.
 
 ```powershell
 .\dev.ps1
@@ -572,16 +606,18 @@ Run the frontend type check and production build:
 
 ```powershell
 cd frontend
-npm run lint
-npm run build
+npm.cmd run lint
+npm.cmd run build
 ```
 
 ## Troubleshooting
 
 ### `FFmpeg was not found in PATH`
 
-Add the `bin` directory from your FFmpeg installation to the Windows `PATH`,
-open a new terminal, and try `ffmpeg -version` again.
+Start the app using the launcher for your operating system so it can set up
+FFmpeg. If you set `FFMPEG_PATH` or `FFPROBE_PATH`, check that they point to
+working executables. Clip exports need an FFmpeg build with the ASS subtitle
+filter and `libx264` encoder.
 
 ### The first analysis fails while downloading a model
 
@@ -595,20 +631,25 @@ Transcription uses CPU-based `int8` computation. You can use a smaller model:
 
 ```powershell
 $env:WHISPER_MODEL = "base"
-.\start.ps1
+.\start.cmd
 ```
 
 Smaller models may run faster but can reduce transcription accuracy.
 
 ### Port 8000 is already in use
 
-Close the application using port `8000`, then run `start.ps1` again.
+If Shorts Studio is already running, open the existing instance. If a different
+app is using port `8000`, run `bash start.sh --port 8001` on macOS or
+`.\start.cmd --port 8001` on Windows.
 
 ## Privacy and Security
 
-- Video/audio processing, transcription and rendered files stay on this computer.
+- Video and audio processing, transcription, live reading, and rendered files
+  stay on this computer.
 - Topic analysis sends transcript text and its source timings to OpenAI through
   the signed-in Codex CLI, using that account's access and usage limits.
+- **İçerik Stüdyosu** sends your brief and any reference transcript to OpenAI
+  through the same CLI.
 - Enhanced SEO sends selected clip text to the configured Ollama server when
   its interface option is enabled. The default address is local.
 - The server listens only on `127.0.0.1` by default and is not designed to be

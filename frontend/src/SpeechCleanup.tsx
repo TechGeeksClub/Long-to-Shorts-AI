@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
+import { TranscriptActions } from "./TranscriptActions";
 import type { JobDetail, SpeechCleanupState, SpeechRegion } from "./types";
 import "./speech-cleanup.css";
 
@@ -338,7 +339,12 @@ export function SpeechCleanup({ job }: { job: JobDetail }) {
         </div>
 
         <section className="speech-regions-panel" aria-labelledby="speech-regions-heading">
-          <div className="speech-region-heading"><div><span className="speech-kicker">KONUŞMA ARALIKLARI</span><h2 id="speech-regions-heading">{regions.length ? `${regions.length} aralık${manualCount ? ` · ${manualCount} manuel` : ""}` : "Videodaki konuşmalar"}</h2></div>
+          <div className="speech-region-heading">
+            <div>
+              <span className="speech-kicker">KONUŞMA ARALIKLARI</span>
+              <h2 id="speech-regions-heading">{regions.length ? `${regions.length} aralık${manualCount ? ` · ${manualCount} manuel` : ""}` : "Videodaki konuşmalar"}</h2>
+              {(job.transcript_available || state?.transcript_available) && <TranscriptActions jobId={job.id} language={job.language} />}
+            </div>
             <button type="button" className="speech-outline-button" disabled={!!pending || working || sourceBusy || !state}
               onClick={() => void perform("detect", () => api.detectSpeech(job.id))}>{pending === "detect" || detecting ? "Bulunuyor…" : state?.status === "ready" ? "Yeniden tara" : "Konuşmaları bul"}</button>
           </div>

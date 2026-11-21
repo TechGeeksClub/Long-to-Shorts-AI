@@ -1,6 +1,12 @@
 import type {
   AnalysisStatus,
   ClipCandidate,
+  ContentHistoryEntry,
+  ContentHistoryItem,
+  ContentOptions,
+  ContentOptionsRequest,
+  ContentPackage,
+  ContentPackageRequest,
   CutRange,
   EditSettings,
   ExportItem,
@@ -19,18 +25,30 @@ import type {
   YoutubeChannelVideos,
 } from "./types";
 
+export class ApiError extends Error {
+  constructor(message: string, readonly code?: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
   if (!response.ok) {
     let message = `İstek başarısız (${response.status})`;
+    let code: string | undefined;
     try {
-      const payload = (await response.json()) as { detail?: string | { msg: string }[] };
-      if (typeof payload.detail === "string") message = payload.detail;
-      else if (Array.isArray(payload.detail)) message = payload.detail.map((item) => item.msg).join(" ");
+      const { detail } = (await response.json()) as { detail?: string | { msg: string }[] | { code: string; message: string } };
+      if (typeof detail === "string") message = detail;
+      else if (Array.isArray(detail)) message = detail.map((item) => item.msg).join(" ");
+      else if (detail && typeof detail.message === "string") {
+        message = detail.message;
+        if (typeof detail.code === "string") code = detail.code;
+      }
     } catch {
       // Keep the status-based message when the response has no JSON body.
     }
-    throw new Error(message);
+    throw new ApiError(message, code);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -58,38 +76,66 @@ async function checkUploadSpace(files: File[]): Promise<void> {
   });
 }
 
-async function uploadProjectFiles(url: string, files: File[], onProgress: (value: number) => void): Promise<ProjectDetail> {
-  await checkUploadSpace(files);
+function uploadForm<T>(
+  url: string, data: FormData, onProgress: (value: number) => void, errorMessage: string, networkMessage = errorMessage,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    const data = new FormData();
-    files.forEach((file) => data.append("videos", file));
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) onProgress(event.loaded / event.total);
     };
-    xhr.onerror = () => reject(new Error("Videolar yüklenemedi. Bağlantını kontrol edip yeniden dene."));
+    xhr.onerror = () => reject(new Error(networkMessage));
     xhr.onload = () => {
       try {
         const payload = JSON.parse(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(payload as ProjectDetail);
+          resolve(payload as T);
         } else {
           const detail = payload.detail;
           reject(new Error(typeof detail === "string" ? detail
             : Array.isArray(detail) ? detail.map((item: { msg: string }) => item.msg).join(" ")
-              : "Videolar yüklenemedi."));
+              : errorMessage));
         }
       } catch {
-        reject(new Error("Videolar yüklenemedi."));
+        reject(new Error(errorMessage));
       }
     };
     xhr.send(data);
   });
 }
 
+async function uploadProjectFiles(url: string, files: File[], onProgress: (value: number) => void): Promise<ProjectDetail> {
+  await checkUploadSpace(files);
+  const data = new FormData();
+  files.forEach((file) => data.append("videos", file));
+  return uploadForm<ProjectDetail>(
+    url, data, onProgress, "Videolar yüklenemedi.", "Videolar yüklenemedi. Bağlantını kontrol edip yeniden dene.",
+  );
+}
+
 export const api = {
   analysisStatus: () => request<AnalysisStatus>("/api/analysis/status"),
+  listContentHistory: () => request<ContentHistoryItem[]>("/api/content-studio/history"),
+  getContentHistoryEntry: (id: string) => request<ContentHistoryEntry>(`/api/content-studio/history/${id}`),
+  suggestContentOptions: (payload: ContentOptionsRequest) =>
+    request<ContentOptions>("/api/content-studio/options", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    }),
+  suggestContentOptionsFromVideo: async (
+    brief: string, video: File, onProgress: (value: number) => void, targetSeconds?: number,
+  ) => {
+    await checkUploadSpace([video]);
+    const data = new FormData();
+    data.append("brief", brief);
+    data.append("video", video);
+    if (targetSeconds !== undefined) data.append("target_seconds", String(targetSeconds));
+    return uploadForm<ContentOptions>("/api/content-studio/options/video", data, onProgress, "Örnek video yüklenemedi.");
+  },
+  generateContentPackage: (payload: ContentPackageRequest) =>
+    request<ContentPackage>("/api/content-studio/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    }),
   listJobs: () => request<JobSummary[]>("/api/jobs"),
   getJob: (jobId: string) => request<JobDetail>(`/api/jobs/${jobId}`),
   listProjects: () => request<ProjectSummary[]>("/api/projects"),

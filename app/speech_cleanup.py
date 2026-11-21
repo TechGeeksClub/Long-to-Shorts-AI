@@ -18,13 +18,13 @@ from pydantic import BaseModel, Field
 
 from app.config import Settings
 from app.database import Database, utc_now
-from app.job_workspace import job_workspace
+from app.job_workspace import speech_transcript_path
 from app.media import MediaError, extract_audio, run_command
 from app.models import CutRange
 from app.speech_detection import SpeechActivityError, detect_speech_activity
 from app.speech_storage import remove_speech_export_partials, speech_export_workspace
 from app.subtitles import kept_ranges_after_cuts, normalize_cut_ranges
-from app.transcription import TranscriptionError, transcribe
+from app.transcription import TranscriptionError, read_transcript_segments, read_transcript_text, transcribe
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +65,7 @@ class SpeechExport(BaseModel):
 
 class SpeechCleanupState(BaseModel):
     job_id: str
+    transcript_available: bool = False
     status: Literal["idle", "queued", "detecting", "ready", "failed"] = "idle"
     progress: float = 0
     error: str | None = None
@@ -332,18 +333,23 @@ class SpeechCleanupService:
 
     def state(self, job_id: str) -> SpeechCleanupState:
         self._job(job_id)
+        transcript_available = bool(read_transcript_text(speech_transcript_path(self.settings, job_id)))
         with self.database.connect() as connection:
             row = connection.execute("SELECT * FROM speech_cleanup WHERE job_id=?", (job_id,)).fetchone()
             exports = connection.execute(
                 "SELECT * FROM speech_cleanup_exports WHERE job_id=? ORDER BY created_at DESC", (job_id,),
             ).fetchall()
         if row is None:
-            return SpeechCleanupState(job_id=job_id, exports=[_public_export(item) for item in exports])
+            return SpeechCleanupState(
+                job_id=job_id, transcript_available=transcript_available,
+                exports=[_public_export(item) for item in exports],
+            )
         regions = [SpeechRegion(**item) for item in json.loads(row["regions_json"])]
         removed_ids = json.loads(row["removed_json"])
         return SpeechCleanupState(
             job_id=job_id, status=row["status"], progress=row["progress"], error=row["error"],
             duration=row["duration"], regions=regions,
+            transcript_available=transcript_available,
             removed_region_ids=removed_ids,
             mute_ranges=build_mute_ranges(regions, removed_ids, row["duration"]) if row["duration"] else [],
             exports=[_public_export(item) for item in exports],
@@ -551,7 +557,8 @@ class SpeechCleanupService:
         try:
             job = self._job(job_id)
             source = Path(job["source_path"])
-            work_dir = job_workspace(self.settings, job_id) / "speech-cleanup"
+            own_cache = speech_transcript_path(self.settings, job_id)
+            work_dir = own_cache.parent
             work_dir.mkdir(parents=True, exist_ok=True)
             self._update_detection(job_id, status="detecting", progress=0.03, error=None)
             payload = json.loads(run_command([
@@ -567,14 +574,12 @@ class SpeechCleanupService:
             self.database.update_job(job_id, duration=duration, width=int(video.get("width") or 0),
                                      height=int(video.get("height") or 0), has_audio=int(has_audio))
             cached_path = Path(job["transcript_path"]) if job["transcript_path"] else None
-            own_cache = work_dir / "transcript.json"
             if cached_path is None or not cached_path.is_file():
                 cached_path = own_cache if own_cache.is_file() else None
             if not has_audio:
                 segments = []
             elif cached_path:
-                transcript = json.loads(cached_path.read_text(encoding="utf-8"))
-                segments = transcript["segments"]
+                segments = read_transcript_segments(cached_path)
             elif has_audio:
                 audio = work_dir / "audio.wav"
                 extract_audio(source, audio, self.settings.ffmpeg)

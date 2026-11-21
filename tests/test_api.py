@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from urllib.parse import unquote
 
 from fastapi.testclient import TestClient
 
@@ -47,6 +48,72 @@ def test_upload_job_lifecycle_without_worker(tmp_path: Path) -> None:
         deleted = client.delete(f"/api/jobs/{job['id']}")
         assert deleted.status_code == 204
         assert not (tmp_path / "data" / "jobs" / job["id"]).exists()
+
+
+def test_downloads_saved_transcript_before_and_after_topic_analysis(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        frontend_dist=tmp_path / "missing-frontend",
+        minimum_free_bytes=0,
+    )
+    app = create_app(settings, start_worker=False)
+    job_dir = settings.data_dir / "jobs" / "job"
+    speech_cache = job_dir / "speech-cleanup" / "transcript.json"
+    speech_cache.parent.mkdir(parents=True)
+    source = job_dir / "Çığ gezisi.mp4"
+    source.write_bytes(b"video")
+    database = app.state.database
+    job_url = "/api/jobs/job"
+    download_url = f"{job_url}/transcript/download"
+    speech_url = f"{job_url}/speech-cleanup"
+
+    with TestClient(app) as client:
+        assert client.get("/api/jobs/unknown/transcript/download").status_code == 404
+        database.create_job("job", source.name, source)
+        database.update_job("job", status="ready")
+        assert client.get(job_url).json()["transcript_available"] is False
+        assert client.get(download_url).status_code == 404
+
+        assert client.post(f"{speech_url}/detect").status_code == 202
+        speech_cache.write_text('{"language": "unknown", "segments": []}', encoding="utf-8")
+        assert client.get(speech_url).json()["transcript_available"] is False
+        assert client.get(download_url).status_code == 404
+
+        speech_cache.write_text(
+            json.dumps({"language": "tr", "segments": [{"start": 0, "end": 1, "text": "Önbellek"}]}),
+            encoding="utf-8",
+        )
+        assert client.get(speech_url).json()["transcript_available"] is True
+        cached_download = client.get(download_url)
+        assert cached_download.status_code == 200
+        assert cached_download.text == "Önbellek\n"
+
+        transcript = job_dir / "transcript.json"
+        transcript.write_text(
+            json.dumps({"language": "tr", "segments": [
+                {"start": 1.3, "end": 2.1, "text": "  Günaydın, Işıl!  "},
+                {"start": 2.1, "end": 3.0, "text": "  "},
+                {"start": 3.0, "end": 4.2, "text": "Çığ, öğleye doğru oldu."},
+            ]}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        database.update_job("job", status="analyzing", transcript_path=str(transcript), progress=0.84)
+        detail = client.get(job_url).json()
+        assert detail["status"] == "analyzing"
+        assert detail["transcript_available"] is True
+
+        download = client.get(download_url)
+        assert download.status_code == 200
+        assert download.headers["content-type"] == "text/plain; charset=utf-8"
+        disposition = download.headers["content-disposition"]
+        assert disposition.startswith("attachment;")
+        assert unquote(disposition.partition("''")[2]) == "Çığ gezisi-transkript.txt"
+        expected_text = "Günaydın, Işıl!\nÇığ, öğleye doğru oldu.\n"
+        assert download.content == expected_text.encode("utf-8")
+
+        database.update_job("job", status="failed", stage="Codex konu analizi tamamlanamadı")
+        assert client.get(job_url).json()["transcript_available"] is True
+        assert client.get(download_url).text == expected_text
 
 
 def test_completed_export_exposes_metadata_download(tmp_path: Path) -> None:

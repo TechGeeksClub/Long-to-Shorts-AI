@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,21 @@ class TranscriptionError(RuntimeError):
 
 
 _models: dict[str, Any] = {}
+
+
+def read_transcript_segments(path: Path) -> list[dict[str, Any]]:
+    return json.loads(path.read_text(encoding="utf-8"))["segments"]
+
+
+def read_transcript_text(path: Path) -> str:
+    try:
+        segments = read_transcript_segments(path)
+    except (OSError, ValueError, KeyError, TypeError):
+        return ""
+    if not isinstance(segments, list):
+        return ""
+    lines = (str(segment.get("text") or "").strip() for segment in segments if isinstance(segment, dict))
+    return "\n".join(line for line in lines if line)
 
 
 def transcribe(

@@ -8,14 +8,15 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, Response, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 from app.config import Settings
 from app.codex_runner import CodexError, codex_status
 from app.database import Database
-from app.job_workspace import job_workspace, remove_job_workspace
+from app.job_workspace import job_workspace, remove_job_workspace, speech_transcript_path
 from app.local_requests import require_local_request
 from app.local_video_picker import PickerError, choose_video_paths
 from app.editing import hook_suggestions, validate_edit_source
@@ -44,6 +45,7 @@ from app.uploads import SafeUploadRoute, UploadPreflightRequest, validate_upload
 from app.subscriptions import generate_subscription_suggestions
 from app.subscription_card import AVATAR_PATH, render_card_preview
 from app.transcript_correction import correct_saved_cues, transcript_fingerprint
+from app.transcription import read_transcript_segments, read_transcript_text
 from app.youtube import package_revision, render_thumbnail
 from app.youtube_import import (
     YoutubeImportError, list_youtube_channel_videos,
@@ -87,10 +89,7 @@ def transcript_segments(job: Any) -> list[dict[str, Any]] | None:
     transcript_path = Path(transcript_value) if transcript_value else None
     if transcript_path is None or not transcript_path.is_file():
         return None
-    import json
-
-    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
-    return transcript["segments"]
+    return read_transcript_segments(transcript_path)
 
 
 def rebuild_subtitles_from_transcript(job: Any, start: float, end: float) -> list | None:
@@ -409,6 +408,25 @@ def create_router(database: Database, work_queue: WorkQueue, settings: Settings)
         media_type, _ = mimetypes.guess_type(path.name)
         headers = {"Cross-Origin-Resource-Policy": "same-origin"} if linked else None
         return FileResponse(path, media_type=media_type or "video/mp4", headers=headers)
+
+    @router.get("/jobs/{job_id}/transcript/download", response_class=PlainTextResponse)
+    def download_transcript(job_id: str) -> PlainTextResponse:
+        job = database.get_job_record(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Video bulunamadı.")
+        text = read_transcript_text(Path(job["transcript_path"])) if job["transcript_path"] else ""
+        if not text:
+            text = read_transcript_text(speech_transcript_path(settings, job_id))
+        if not text:
+            raise HTTPException(status_code=404, detail="İndirilecek konuşma metni bulunamadı.")
+        filename = quote(f"{Path(job['filename']).stem}-transkript.txt", safe="")
+        return PlainTextResponse(
+            text + "\n",
+            headers={
+                "Content-Disposition": f"attachment; filename=transkript.txt; filename*=UTF-8''{filename}",
+                "Cache-Control": "no-store",
+            },
+        )
 
     @router.post("/jobs/{job_id}/transcript/correct", response_model=JobDetail, status_code=202)
     def correct_job_subtitles(job_id: str) -> JobDetail:

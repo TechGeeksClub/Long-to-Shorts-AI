@@ -1,0 +1,178 @@
+.transcript-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.transcript-actions .secondary-button[aria-haspopup="dialog"] {
+  border: 1px solid #69783d;
+  background: #202513;
+  color: var(--acid);
+  white-space: normal;
+}
+
+.transcript-actions .secondary-button[aria-haspopup="dialog"]:hover {
+  border-color: var(--acid);
+}
+
+.speech-region-heading .transcript-actions { margin-top: 9px; }
+
+.transcript-reader {
+  width: min(54rem, calc(100% - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid #414832;
+  background: var(--panel);
+  color: #f4f3ef;
+  color-scheme: dark;
+  box-shadow: 0 24px 90px #0009;
+}
+
+.transcript-reader::backdrop { background: #080809d9; }
+
+.transcript-reader-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.transcript-reader-header h2 {
+  margin: 0;
+  font-size: clamp(1.125rem, 3vw, 1.375rem);
+  letter-spacing: -.025em;
+}
+
+.transcript-reader .transcript-reader-header button,
+.transcript-reader .transcript-reader-controls .secondary-button {
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid #3c3d38;
+  background: #191a17;
+  color: #e2e3dc;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.transcript-reader .transcript-reader-header button:hover,
+.transcript-reader .transcript-reader-controls .secondary-button:enabled:hover {
+  border-color: #758646;
+  color: var(--acid);
+}
+
+.transcript-reader-body { padding: clamp(14px, 3.5vw, 28px); }
+
+.transcript-reader .transcript-reader-stage {
+  min-block-size: clamp(9rem, 26dvh, 14rem);
+  max-block-size: max(9rem, 48dvh);
+  overflow: auto;
+  margin: 0;
+  padding: clamp(12px, 3vw, 26px);
+  border: 1px solid #30352a;
+  background: #0b0d09;
+  color: #cbcfc1;
+  font-size: clamp(1.45rem, 4.3vw, 2.5rem);
+  font-weight: 600;
+  line-height: 1.65;
+  letter-spacing: -.025em;
+}
+
+.transcript-reader-word {
+  display: inline-grid;
+  max-width: 100%;
+  padding-inline: .12em;
+  border-radius: .14em;
+  vertical-align: baseline;
+}
+
+.transcript-reader-word > span {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.transcript-reader-word-active { font-weight: 800; }
+
+/* Keep both spellings in the grid so highlighting never moves the surrounding words. */
+.transcript-reader-word-active,
+.transcript-reader-word[aria-current="true"] .transcript-reader-word-original { visibility: hidden; }
+
+.transcript-reader-word[aria-current="true"] {
+  background: var(--acid);
+  color: #141802;
+}
+
+.transcript-reader-word[aria-current="true"] .transcript-reader-word-active { visibility: visible; }
+
+.transcript-reader-position {
+  display: grid;
+  gap: 5px;
+  margin-block: 15px;
+  color: #bdc2b3;
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.transcript-reader-position input[type="range"] {
+  width: 100%;
+  min-height: 24px;
+  margin: 0;
+  accent-color: var(--acid);
+  cursor: pointer;
+}
+
+.transcript-reader-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-reader .transcript-reader-controls .primary-button {
+  min-width: 7.25rem;
+  min-height: 40px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.transcript-reader .transcript-reader-controls button:disabled { cursor: default; }
+
+.transcript-reader-speed {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-inline-start: auto;
+  color: #bdc2b3;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.transcript-reader-speed select {
+  min-height: 40px;
+  padding: 7px 9px;
+  border: 1px solid #3c3d38;
+  background: #191a17;
+  color: #e2e3dc;
+  font: inherit;
+}
+
+.transcript-reader :is(button, input, select):focus-visible,
+.transcript-actions :is(button, a):focus-visible {
+  outline: 2px solid var(--acid);
+  outline-offset: 3px;
+}
+
+@media (max-width: 40rem) {
+  .transcript-reader-header { padding: 12px 14px; }
+  .transcript-reader-speed { margin-inline-start: 0; }
+}

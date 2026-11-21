@@ -48,6 +48,7 @@ export interface SpeechCleanupExport {
 
 export interface SpeechCleanupState {
   job_id: string;
+  transcript_available: boolean;
   status: "idle" | "queued" | "detecting" | "ready" | "failed";
   progress: number;
   error: string | null;
@@ -233,6 +234,7 @@ export interface YoutubeChannelVideos {
 }
 
 export interface JobDetail extends JobSummary {
+  transcript_available: boolean;
   clips: ClipCandidate[];
   exports: ExportItem[];
   analysis: TopicAnalysis | null;
@@ -295,4 +297,75 @@ export interface AnalysisStatus {
   authenticated: boolean;
   model: string | null;
   message: string;
+}
+
+export interface ContentOptionsRequest {
+  brief: string;
+  reference_url?: string;
+  reference_transcript?: string;
+  target_seconds?: number;
+}
+
+export interface ContentFlowBeat {
+  title: string;
+  story: string;
+  visual: string;
+  transition: string;
+}
+
+export interface ContentFlow {
+  id: string;
+  title: string;
+  hook: string;
+  approach: string;
+  premise?: string;
+  payoff?: string;
+  tradeoff?: string;
+  beats: (ContentFlowBeat | string)[];
+}
+
+export interface ContentOptions {
+  reference_insights: string;
+  target_seconds?: number;
+  options: ContentFlow[];
+}
+
+export interface ContentHistoryItem {
+  id: string;
+  created_at: string;
+  brief_preview: string;
+  title: string;
+  target_seconds: number;
+}
+
+export interface ContentHistoryEntry {
+  id: string;
+  brief: string;
+  has_reference: boolean;
+  data: ContentOptions;
+}
+
+export interface ContentPackageRequest {
+  brief: string;
+  reference_insights: string;
+  option: ContentFlow;
+  target_seconds?: number;
+}
+
+export interface ContentEditBeat {
+  beat: string;
+  spoken?: string;
+  visual: string;
+  edit: string;
+  audio?: string;
+  on_screen?: string;
+  transition?: string;
+}
+
+export interface ContentPackage {
+  script: string;
+  target_seconds?: number;
+  estimated_speech_seconds?: number;
+  edit_plan: ContentEditBeat[];
+  seo: { titles: string[]; description: string; keywords: string[] };
 }

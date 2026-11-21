@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import create_router
 from app.config import Settings, settings
 from app.codex_runner import cancel_active_codex_runs
+from app.content_studio_api import create_content_studio_router
 from app.database import Database
 from app.processor import Processor
 from app.queue import WorkQueue
@@ -78,6 +79,7 @@ def create_app(app_settings: Settings = settings, start_worker: bool = True) -> 
     application.include_router(create_router(database, work_queue, app_settings))
     application.include_router(create_speech_router(speech_cleanup, work_queue))
     application.include_router(create_project_router(projects, work_queue))
+    application.include_router(create_content_studio_router(app_settings, database))
 
     if app_settings.frontend_dist.exists():
         assets = app_settings.frontend_dist / "assets"

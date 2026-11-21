@@ -8,9 +8,11 @@ import {
   useState,
 } from "react";
 import { api } from "./api";
+import { ContentStudio } from "./ContentStudio";
 import { EDIT_STYLE_LABELS, VIDEO_EFFECT_LABELS, MotovlogEditor } from "./MotovlogEditor";
 import { TopicAnalysisPanel } from "./TopicAnalysisPanel";
 import { TranscriptCorrection } from "./TranscriptCorrection";
+import { TranscriptActions } from "./TranscriptActions";
 import { YoutubeStudio } from "./YoutubeStudio";
 import { YoutubeImport } from "./YoutubeImport";
 import { SpeechCleanup } from "./SpeechCleanup";
@@ -1916,6 +1918,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [retryingAnalysis, setRetryingAnalysis] = useState(false);
   const [switchingVideo, setSwitchingVideo] = useState(false);
+  const [workspace, setWorkspace] = useState<"projects" | "content">("projects");
   const [projectTool, setProjectTool] = useState<"shorts" | "speech" | "merge">("shorts");
   const projectTabs = useRef<HTMLDivElement>(null);
   const navigation = useRef(0);
@@ -1924,10 +1927,11 @@ export default function App() {
   currentProjectId.current = activeProject?.id ?? null;
 
   useEffect(() => {
-    if (projectTool !== "shorts") {
-      document.querySelectorAll<HTMLVideoElement>("#project-shorts-panel video").forEach((video) => video.pause());
+    const selector = workspace === "content" ? "#project-workspace video" : "#project-shorts-panel video";
+    if (workspace === "content" || projectTool !== "shorts") {
+      document.querySelectorAll<HTMLVideoElement>(selector).forEach((video) => video.pause());
     }
-  }, [projectTool]);
+  }, [projectTool, workspace]);
 
   const refreshProjects = useCallback(async () => {
     const version = ++projectListRequest.current;
@@ -2104,8 +2108,14 @@ export default function App() {
     () => activeJob?.clips.filter((clip) => clip.selected).length ?? 0,
     [activeJob?.clips],
   );
+  const openWorkspace = (next: typeof workspace) => {
+    if (workspace === next) return;
+    setWorkspace(next);
+    window.scrollTo(0, 0);
+  };
   const newProject = () => {
     navigation.current += 1;
+    openWorkspace("projects");
     setActiveProject(null);
     setActiveJob(null);
     setSwitchingVideo(false);
@@ -2120,12 +2130,21 @@ export default function App() {
           <span><Icon name="film" /></span>
           <strong>SHORTS<em>STUDIO</em></strong>
         </button>
+        <nav className="workspace-navigation" aria-label="Çalışma alanları">
+          <button type="button" aria-pressed={workspace === "projects"} aria-controls="project-workspace"
+            onClick={() => openWorkspace("projects")}>Video Projeleri</button>
+          <button type="button" aria-pressed={workspace === "content"} aria-controls="content-workspace"
+            onClick={() => openWorkspace("content")}>İçerik Stüdyosu</button>
+        </nav>
         <div className="local-badge"><i /> YEREL VİDEO İŞLEME</div>
         <button className="new-button" disabled={uploading || importingYoutube} onClick={newProject}>
           <span>+</span> Yeni proje
         </button>
       </header>
-      <div className="body">
+      <div id="content-workspace" className="content-workspace" hidden={workspace !== "content"}>
+        <ContentStudio />
+      </div>
+      <div id="project-workspace" className="body" hidden={workspace !== "projects"}>
         <aside className="history">
           <div className="history-title">PROJELER <span>{projects.length}</span></div>
           <div className="history-list">
@@ -2202,6 +2221,9 @@ export default function App() {
               importing={importingYoutube} onYoutube={importYoutube} />
           ) : <>
             <div id="project-shorts-panel" role="tabpanel" aria-labelledby="project-shorts-tab" hidden={projectTool !== "shorts"}>
+              {activeJob?.transcript_available && <div className="transcript-actions-row">
+                <TranscriptActions jobId={activeJob.id} language={activeJob.language} />
+              </div>}
               {!activeJob ? <p className="speech-empty">İşlem yapmak için projeye video ekle.</p> : ACTIVE_STATUSES.has(activeJob.status) && !activeJob.clips.length ? (
                 <JobProgress job={activeJob} />
               ) : (activeJob.status === "failed" || activeJob.status === "interrupted") && !activeJob.clips.length ? (
@@ -2225,7 +2247,7 @@ export default function App() {
           </>}
         </div>
       </div>
-      {selectedCount > 0 && activeJob && projectTool === "shorts" && <div className="selection-toast">{selectedCount} klip seçili</div>}
+      {workspace === "projects" && selectedCount > 0 && activeJob && projectTool === "shorts" && <div className="selection-toast">{selectedCount} klip seçili</div>}
     </div>
   );
 }

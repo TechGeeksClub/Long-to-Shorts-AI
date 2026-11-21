@@ -122,6 +122,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .source-origin > span { color:#8a8e80; }
 .source-origin a { color:#c6d99a; text-decoration:none; }
 .source-origin a:hover { text-decoration:underline; }
+.transcript-actions-row { max-width: 1320px; margin: 0 auto 18px; }
+.transcript-download { display: inline-block; color: #c6d99a; font-size: 12px; font-weight: 700; text-underline-offset: 3px; }
+.transcript-download:hover { color: var(--acid); }
 @media(max-width:600px) { .youtube-import { padding:18px; } .youtube-source-input-row { flex-direction:column; } .youtube-video-grid { grid-template-columns:1fr; } .youtube-import-heading { gap:12px; } .youtube-import h2 { font-size:18px; } .youtube-source-mark { width:36px; height:30px; } .source-chooser button { flex:1; padding:11px 10px; } }
 .feature-row { display: flex; justify-content: center; gap: 38px; margin-top: 30px; color: #737370; font-size: 11px; }
 .feature-row b { color: var(--acid); margin-right: 7px; font-size: 9px; }

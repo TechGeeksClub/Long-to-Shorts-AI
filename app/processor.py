@@ -100,6 +100,7 @@ class Processor:
         source = Path(record["source_path"])
         audio_path = job_dir / "audio.wav"
         transcript_path = job_dir / "transcript.json"
+        pending_transcript = transcript_path.with_suffix(".writing.json")
         try:
             job_dir.mkdir(exist_ok=True, parents=True)
             self.database.update_job(
@@ -150,7 +151,7 @@ class Processor:
                     transcription_progress,
                 )
             segments = annotate_transcript_segments(segments)
-            transcript_path.write_text(
+            pending_transcript.write_text(
                 json.dumps(
                     {"language": language, "segments": segments},
                     ensure_ascii=False,
@@ -158,6 +159,7 @@ class Processor:
                 ),
                 encoding="utf-8",
             )
+            pending_transcript.replace(transcript_path)
             self.database.update_job(
                 job_id,
                 language=language,
@@ -202,6 +204,7 @@ class Processor:
             )
         finally:
             audio_path.unlink(missing_ok=True)
+            pending_transcript.unlink(missing_ok=True)
 
     def _correct_job_transcript(self, job_id: str, path: Path, segments: list, language: str) -> list:
         previous = self.database.get_job(job_id)
